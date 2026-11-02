@@ -47,4 +47,3 @@ export const TEMPLATES: Template[] = [
 export const INSTAGRAM_PRESETS: TemplateId[] = ['1:1', '4:5', '9:16', '1.91:1'];
 export const WIDE_PRESETS: TemplateId[] = ['16:9', '1.91:1', '3:2'];
 export const TALL_PRESETS: TemplateId[] = ['4:5', '9:16', '2:3'];
-export const SQUARE_PRESETS: TemplateId[] = ['1:1'];

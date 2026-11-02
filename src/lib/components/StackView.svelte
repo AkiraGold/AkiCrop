@@ -11,6 +11,10 @@
 
 	const SWIPE_THRESHOLD = 60;
 	const SWIPE_DRAG_CLAMP = 0.4;
+	const LIST_GRID_MIN_COL = 440;
+	const LIST_GRID_GAP = 12;
+	const LIST_GRID_PAD = 32;
+	const LIST_SINGLE_COL_MQ = '(max-width: 767px)';
 
 	interface Props {
 		viewportEl?: HTMLDivElement | null;
@@ -25,7 +29,7 @@
 		onStackFiles: (e: Event) => void;
 		removeStackImage: (index: number) => void;
 		clearStack: () => void;
-		moveStackImage: (index: number, dir: -1 | 1) => void;
+		reorderStack: (from: number, to: number) => void;
 	}
 	let {
 		viewportEl = $bindable(),
@@ -40,13 +44,18 @@
 		onStackFiles,
 		removeStackImage,
 		clearStack,
-		moveStackImage
+		reorderStack
 	}: Props = $props();
 
 	let stackViewMode = $state<'list' | 'story'>('list');
 	let stackStoryIndex = $state(0);
 	let stackZoom = $state(1);
 	let stackListEl = $state<HTMLDivElement | null>(null);
+	let stackScrollEl = $state<HTMLDivElement | null>(null);
+	let dragFromIndex = $state<number | null>(null);
+	let dragOverIndex = $state<number | null>(null);
+	let listHoverIndex = $state<number | null>(null);
+	let lastDragPoint = { x: 0, y: 0 };
 	let stackFileInputEl = $state<HTMLInputElement | null>(null);
 	let stackStoryCanvasEl = $state<HTMLCanvasElement | null>(null);
 	let stackSwipeCanvasLeft = $state<HTMLCanvasElement | null>(null);
@@ -54,13 +63,31 @@
 	let stackSwipeCanvasRight = $state<HTMLCanvasElement | null>(null);
 	let stackSwipeDragOffset = $state(0);
 	let stackSwipePointerStart = $state<{ x: number; startOffset: number } | null>(null);
-	let stackZoomHudVisible = $state(false);
-	let stackZoomHudInitialized = false;
-	let stackZoomHudTimeout: ReturnType<typeof setTimeout> | null = null;
+	let browseForcedSingleCol = $state(
+		typeof window !== 'undefined' ? window.matchMedia(LIST_SINGLE_COL_MQ).matches : false
+	);
 
 	const stackStoryCurrentItem = $derived(
 		stackImages.length > 0 ? stackImages[stackStoryIndex] ?? stackImages[0] : null
 	);
+
+	const browseViewLabel = $derived.by(() => {
+		if (browseForcedSingleCol) return 'List';
+		const inner = Math.max(0, containerSize.width - LIST_GRID_PAD);
+		const cols = Math.max(1, Math.floor((inner + LIST_GRID_GAP) / (LIST_GRID_MIN_COL + LIST_GRID_GAP)));
+		return cols > 1 ? 'Grid' : 'List';
+	});
+
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia(LIST_SINGLE_COL_MQ);
+		const sync = () => {
+			browseForcedSingleCol = mq.matches;
+		};
+		sync();
+		mq.addEventListener('change', sync);
+		return () => mq.removeEventListener('change', sync);
+	});
 
 	function getStackSwipeDims(item: StackImage) {
 		if (!item || containerSize.width <= 0 || containerSize.height <= 0)
@@ -86,6 +113,14 @@
 		stackStoryCurrentItem ? getStackSwipeDims(stackStoryCurrentItem) : { width: 0, height: 0 }
 	);
 
+	function stackStoryPrev() {
+		if (stackImages.length <= 1) return;
+		stackStoryIndex = Math.max(0, stackStoryIndex - 1);
+	}
+	function stackStoryNext() {
+		if (stackImages.length <= 1) return;
+		stackStoryIndex = Math.min(stackImages.length - 1, stackStoryIndex + 1);
+	}
 	function stackZoomIn() {
 		stackZoom = Math.min(STACK_ZOOM_MAX, Math.round((stackZoom + STACK_ZOOM_STEP) * 100) / 100);
 	}
@@ -95,13 +130,10 @@
 	function stackZoomReset() {
 		stackZoom = 1;
 	}
-	function stackStoryPrev() {
-		if (stackImages.length <= 1) return;
-		stackStoryIndex = Math.max(0, stackStoryIndex - 1);
-	}
-	function stackStoryNext() {
-		if (stackImages.length <= 1) return;
-		stackStoryIndex = Math.min(stackImages.length - 1, stackStoryIndex + 1);
+	function openSwipeAt(index: number) {
+		if (index < 0 || index >= stackImages.length) return;
+		stackStoryIndex = index;
+		stackViewMode = 'story';
 	}
 
 	const debouncedStackRender = debounce(() => {
@@ -143,26 +175,6 @@
 		if (n === 0) return;
 		if (stackStoryIndex >= n) stackStoryIndex = n - 1;
 	});
-	$effect(() => {
-		stackZoom;
-		if (!stackZoomHudInitialized) {
-			stackZoomHudInitialized = true;
-			return;
-		}
-		stackZoomHudVisible = true;
-		if (stackZoomHudTimeout) clearTimeout(stackZoomHudTimeout);
-		stackZoomHudTimeout = setTimeout(() => {
-			stackZoomHudVisible = false;
-			stackZoomHudTimeout = null;
-		}, 700);
-		return () => {
-			if (stackZoomHudTimeout) {
-				clearTimeout(stackZoomHudTimeout);
-				stackZoomHudTimeout = null;
-			}
-		};
-	});
-
 	function renderStackSwipePanel(
 		canvas: HTMLCanvasElement | null,
 		item: StackImage | undefined,
@@ -280,6 +292,111 @@
 		else if (offset < -SWIPE_THRESHOLD && stackStoryIndex < stackImages.length - 1) stackStoryNext();
 		stackSwipeDragOffset = 0;
 	}
+
+	function syncListHoverFromPoint(x: number, y: number) {
+		if (!stackListEl) {
+			listHoverIndex = null;
+			return;
+		}
+		const el = document.elementFromPoint(x, y);
+		const wrap = el instanceof Element ? el.closest('.stack-cell-wrap') : null;
+		if (!(wrap instanceof HTMLElement) || !stackListEl.contains(wrap)) {
+			listHoverIndex = null;
+			return;
+		}
+		const idx = Array.prototype.indexOf.call(stackListEl.children, wrap);
+		listHoverIndex = idx >= 0 ? idx : null;
+	}
+
+	function autoScrollWhileDragging(clientY: number) {
+		if (!stackScrollEl || dragFromIndex == null) return;
+		const rect = stackScrollEl.getBoundingClientRect();
+		const edge = 72;
+		const maxStep = 28;
+		if (clientY < rect.top + edge) {
+			const t = 1 - Math.max(0, clientY - rect.top) / edge;
+			stackScrollEl.scrollTop -= Math.ceil(maxStep * t);
+		} else if (clientY > rect.bottom - edge) {
+			const t = 1 - Math.max(0, rect.bottom - clientY) / edge;
+			stackScrollEl.scrollTop += Math.ceil(maxStep * t);
+		}
+	}
+
+	function onListDragStart(e: DragEvent, index: number) {
+		dragFromIndex = index;
+		dragOverIndex = index;
+		listHoverIndex = null;
+		lastDragPoint = { x: e.clientX, y: e.clientY };
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', String(index));
+		}
+		const wrap = (e.currentTarget as HTMLElement).closest('.stack-cell-wrap');
+		if (wrap instanceof HTMLElement) wrap.classList.add('dragging');
+		if (e.currentTarget instanceof HTMLElement) e.currentTarget.blur();
+	}
+
+	function finishListDrag(e: DragEvent) {
+		dragFromIndex = null;
+		dragOverIndex = null;
+		const wrap = (e.currentTarget as HTMLElement).closest('.stack-cell-wrap');
+		if (wrap instanceof HTMLElement) wrap.classList.remove('dragging');
+		if (e.currentTarget instanceof HTMLElement) e.currentTarget.blur();
+		// CSS :hover sticks after DnD until the next real mousemove — re-sync from pointer
+		requestAnimationFrame(() => syncListHoverFromPoint(lastDragPoint.x, lastDragPoint.y));
+	}
+
+	function onListDragEnd(e: DragEvent) {
+		finishListDrag(e);
+	}
+
+	function onListDragOver(e: DragEvent, index: number) {
+		e.preventDefault();
+		lastDragPoint = { x: e.clientX, y: e.clientY };
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		autoScrollWhileDragging(e.clientY);
+		if (dragFromIndex == null || dragFromIndex === index) {
+			dragOverIndex = dragFromIndex;
+			return;
+		}
+		dragOverIndex = index;
+	}
+
+	function onStackScrollDragOver(e: DragEvent) {
+		if (dragFromIndex == null) return;
+		e.preventDefault();
+		lastDragPoint = { x: e.clientX, y: e.clientY };
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		autoScrollWhileDragging(e.clientY);
+	}
+
+	function onListDrop(e: DragEvent, index: number) {
+		e.preventDefault();
+		lastDragPoint = { x: e.clientX, y: e.clientY };
+		const from = dragFromIndex;
+		if (from != null && from !== index) reorderStack(from, index);
+		finishListDrag(e);
+	}
+
+	function onListDragLeave(e: DragEvent, index: number) {
+		const related = e.relatedTarget as Node | null;
+		const wrap = e.currentTarget as HTMLElement;
+		if (related && wrap.contains(related)) return;
+		if (dragOverIndex === index) dragOverIndex = dragFromIndex;
+	}
+
+	function onListPointerEnter(index: number) {
+		if (dragFromIndex != null) return;
+		listHoverIndex = index;
+	}
+
+	function onListPointerLeave(e: PointerEvent) {
+		if (dragFromIndex != null) return;
+		const related = e.relatedTarget as Node | null;
+		const wrap = e.currentTarget as HTMLElement;
+		if (related && wrap.contains(related)) return;
+		if (listHoverIndex !== null) listHoverIndex = null;
+	}
 </script>
 
 <div
@@ -308,6 +425,7 @@
 						<canvas
 							bind:this={stackSwipeCanvasLeft}
 							class="stack-story-canvas"
+							style="transform: scale({stackZoom})"
 							width={stackStoryIndex > 0 ? getStackSwipeDims(stackImages[stackStoryIndex - 1]).width : 0}
 							height={stackStoryIndex > 0 ? getStackSwipeDims(stackImages[stackStoryIndex - 1]).height : 0}
 						></canvas>
@@ -316,6 +434,7 @@
 						<canvas
 							bind:this={stackSwipeCanvasCenter}
 							class="stack-story-canvas"
+							style="transform: scale({stackZoom})"
 							width={stackStoryDims.width}
 							height={stackStoryDims.height}
 						></canvas>
@@ -324,6 +443,7 @@
 						<canvas
 							bind:this={stackSwipeCanvasRight}
 							class="stack-story-canvas"
+							style="transform: scale({stackZoom})"
 							width={stackStoryIndex < stackImages.length - 1 ? getStackSwipeDims(stackImages[stackStoryIndex + 1]).width : 0}
 							height={stackStoryIndex < stackImages.length - 1 ? getStackSwipeDims(stackImages[stackStoryIndex + 1]).height : 0}
 						></canvas>
@@ -339,17 +459,31 @@
 					<canvas
 						bind:this={stackStoryCanvasEl}
 						class="stack-story-canvas"
+						style="transform: scale({stackZoom})"
 						width={stackStoryDims.width}
 						height={stackStoryDims.height}
 					></canvas>
 				</div>
 			{/if}
 		{:else}
-			<div class="stack-scroll">
-				<div class="stack-zoom-wrap" style="transform: scale({stackZoom}); transform-origin: top center;">
+			<div
+				class="stack-scroll"
+				bind:this={stackScrollEl}
+				ondragover={onStackScrollDragOver}
+			>
+				<div class="stack-list-wrap">
 					<div class="stack-list" bind:this={stackListEl}>
-						{#each stackImages as item, i}
-							<div class="stack-cell-wrap">
+						{#each stackImages as item, i (item.preview)}
+							<div
+								class="stack-cell-wrap"
+								class:drag-over={dragOverIndex === i && dragFromIndex !== null && dragFromIndex !== i}
+								class:show-controls={listHoverIndex === i && dragFromIndex === null}
+								onpointerenter={() => onListPointerEnter(i)}
+								onpointerleave={onListPointerLeave}
+								ondragover={(e) => onListDragOver(e, i)}
+								ondragleave={(e) => onListDragLeave(e, i)}
+								ondrop={(e) => onListDrop(e, i)}
+							>
 								<div class="stack-cell">
 									<canvas
 										class="stack-cell-canvas"
@@ -357,11 +491,46 @@
 										width={getCanvasDimensions(item.preview.width, item.preview.height, templateRatio, STACK_PREVIEW_MAX).width}
 										height={getCanvasDimensions(item.preview.width, item.preview.height, templateRatio, STACK_PREVIEW_MAX).height}
 									></canvas>
-								</div>
-								<div class="stack-cell-actions">
-									<button type="button" class="stack-cell-btn" onclick={() => moveStackImage(i, -1)} disabled={i === 0} title="Move up">↑</button>
-									<button type="button" class="stack-cell-btn" onclick={() => moveStackImage(i, 1)} disabled={i === stackImages.length - 1} title="Move down">↓</button>
-									<button type="button" class="stack-cell-btn stack-cell-remove" onclick={() => removeStackImage(i)} title="Remove">×</button>
+									<div
+										class="stack-cell-handle"
+										draggable="true"
+										role="button"
+										tabindex="-1"
+										title="Drag to reorder"
+										aria-label="Drag to reorder item {i + 1}"
+										ondragstart={(e) => onListDragStart(e, i)}
+										ondragend={onListDragEnd}
+									>
+										<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+											<circle cx="9" cy="6" r="1.5" />
+											<circle cx="15" cy="6" r="1.5" />
+											<circle cx="9" cy="12" r="1.5" />
+											<circle cx="15" cy="12" r="1.5" />
+											<circle cx="9" cy="18" r="1.5" />
+											<circle cx="15" cy="18" r="1.5" />
+										</svg>
+									</div>
+									<button
+										type="button"
+										class="stack-cell-remove"
+										onclick={() => removeStackImage(i)}
+										title="Remove"
+										aria-label="Remove item {i + 1}"
+									>×</button>
+									<button
+										type="button"
+										class="stack-cell-swipe"
+										onclick={() => openSwipeAt(i)}
+										title="Open in Swipe"
+										aria-label="Open item {i + 1} in Swipe view"
+									>
+										<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<path d="M15 3h6v6" />
+											<path d="M10 14 21 3" />
+											<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+										</svg>
+									</button>
+									<span class="stack-cell-index" aria-hidden="true">{i + 1}</span>
 								</div>
 							</div>
 						{/each}
@@ -386,7 +555,7 @@
 {#if stackImages.length}
 	<footer class="zoom-bar">
 		<div class="zoom-group">
-			<button type="button" class="zoom-btn" class:selected={stackViewMode === 'list'} onclick={() => (stackViewMode = 'list')} title="List view">List</button>
+			<button type="button" class="zoom-btn" class:selected={stackViewMode === 'list'} onclick={() => (stackViewMode = 'list')} title={`${browseViewLabel} view`}>{browseViewLabel}</button>
 			<button type="button" class="zoom-btn" class:selected={stackViewMode === 'story'} onclick={() => (stackViewMode = 'story')} title="One at a time (drag to switch)">Swipe</button>
 			<div class="zoom-subgroup">
 				<label class="zoom-btn">
@@ -396,7 +565,7 @@
 				<button type="button" class="zoom-btn" onclick={clearStack}>Clear</button>
 			</div>
 		</div>
-		{#if stackViewMode === 'list'}
+		{#if stackViewMode === 'story'}
 			<div class="zoom-group zoom-group-zoom">
 				<button type="button" class="zoom-btn" class:selected={stackZoom === 1} onclick={stackZoomReset} title="100%">100%</button>
 				<span class="zoom-pct">{Math.round(stackZoom * 100)}%</span>
@@ -405,11 +574,6 @@
 			</div>
 		{/if}
 	</footer>
-{/if}
-{#if stackImages.length && stackViewMode === 'list'}
-	<div class="stack-zoom-hud" class:visible={stackZoomHudVisible} aria-hidden="true">
-		{Math.round(stackZoom * 100)}%
-	</div>
 {/if}
 
 <style>
@@ -500,6 +664,8 @@
 		max-height: 100%;
 		object-fit: contain;
 		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+		transform-origin: center center;
+		transition: transform 0.12s ease;
 	}
 	.stack-story-nav {
 		position: absolute;
@@ -549,66 +715,127 @@
 		overflow-x: hidden;
 		-webkit-overflow-scrolling: touch;
 	}
-	.stack-zoom-wrap {
+	.stack-list-wrap {
 		display: block;
 		width: 100%;
-		padding: 24px;
+		padding: 16px;
 		box-sizing: border-box;
 	}
 	.stack-list {
-		display: flex;
-		flex-direction: column;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
 		gap: 12px;
 		width: 100%;
 		box-sizing: border-box;
+		align-items: start;
 	}
 	.stack-cell-wrap {
-		display: flex;
-		align-items: center;
-		gap: 12px;
 		background: var(--bg-input);
 		border-radius: var(--radius);
-		padding: 12px;
+		padding: 8px;
 		border: 1px solid var(--border-subtle);
+		transition: border-color 0.15s, box-shadow 0.15s, opacity 0.15s;
+		/* Keep wheel/trackpad scroll free; only the handle starts a drag */
+		touch-action: pan-y;
+	}
+	.stack-cell-wrap.drag-over {
+		border-color: var(--adobe-blue);
+		box-shadow: 0 0 0 1px var(--adobe-blue);
+	}
+	.stack-cell-wrap.dragging {
+		opacity: 0.45;
 	}
 	.stack-cell {
-		flex-shrink: 0;
+		position: relative;
+		width: 100%;
+		min-width: 0;
 		border-radius: var(--radius);
 		overflow: hidden;
 		box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
 	}
 	.stack-cell-canvas {
 		display: block;
-		vertical-align: bottom;
-		max-width: 100%;
+		width: 100%;
+		height: auto;
+		pointer-events: none;
 	}
-	.stack-cell-actions {
+	.stack-cell-handle,
+	.stack-cell-remove,
+	.stack-cell-swipe {
+		position: absolute;
+		z-index: 2;
 		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		margin-left: auto;
-	}
-	.stack-cell-btn {
-		min-width: 36px;
-		min-height: 32px;
-		padding: 4px 8px;
+		align-items: center;
+		justify-content: center;
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius);
-		background: var(--bg-panel);
+		background: rgba(0, 0, 0, 0.55);
 		color: var(--text-primary);
-		font-size: 14px;
 		cursor: pointer;
-		transition: background 0.15s;
+		transition: background 0.15s, opacity 0.15s;
+		opacity: 0;
+		pointer-events: none;
 	}
-	.stack-cell-btn:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.08);
+	.stack-cell-wrap.show-controls .stack-cell-handle,
+	.stack-cell-wrap.show-controls .stack-cell-remove,
+	.stack-cell-wrap.show-controls .stack-cell-swipe {
+		opacity: 1;
+		pointer-events: auto;
 	}
-	.stack-cell-btn:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
+	.stack-cell-handle {
+		top: 8px;
+		left: 8px;
+		width: 32px;
+		height: 32px;
+		padding: 0;
+		cursor: grab;
+		touch-action: none;
+	}
+	.stack-cell-handle:active {
+		cursor: grabbing;
+	}
+	.stack-cell-handle:hover {
+		background: rgba(0, 0, 0, 0.75);
 	}
 	.stack-cell-remove {
-		color: var(--error, #c66);
+		top: 8px;
+		right: 8px;
+		width: 32px;
+		height: 32px;
+		padding: 0;
+		font-size: 18px;
+		line-height: 1;
+		color: #f0a0a0;
+	}
+	.stack-cell-remove:hover {
+		background: rgba(120, 30, 30, 0.85);
+		color: #fff;
+	}
+	.stack-cell-swipe {
+		bottom: 8px;
+		right: 8px;
+		width: 32px;
+		height: 32px;
+		padding: 0;
+	}
+	.stack-cell-swipe:hover {
+		background: rgba(59, 99, 251, 0.85);
+		color: #fff;
+	}
+	.stack-cell-index {
+		position: absolute;
+		bottom: 8px;
+		left: 8px;
+		z-index: 1;
+		min-width: 22px;
+		padding: 2px 7px;
+		border-radius: 999px;
+		background: rgba(0, 0, 0, 0.55);
+		color: var(--text-secondary);
+		font-size: 11px;
+		font-weight: 600;
+		text-align: center;
+		pointer-events: none;
 	}
 	.zoom-bar {
 		width: 100%;
@@ -639,6 +866,12 @@
 	}
 	.zoom-group-zoom {
 		margin-left: auto;
+	}
+	.zoom-pct {
+		min-width: 48px;
+		text-align: center;
+		font-size: var(--font-size-label);
+		color: var(--text-secondary);
 	}
 	.zoom-bar label.zoom-btn {
 		display: inline-flex;
@@ -674,64 +907,41 @@
 		background: rgba(59, 99, 251, 0.2);
 		color: #a5b8ff;
 	}
-	.zoom-pct {
-		min-width: 48px;
-		text-align: center;
-		font-size: var(--font-size-label);
-		color: var(--text-secondary);
-	}
-	.stack-zoom-hud {
-		position: absolute;
-		left: 50%;
-		bottom: calc(var(--zoombar-height) + 10px);
-		transform: translateX(-50%) translateY(6px);
-		padding: 6px 10px;
-		border-radius: 999px;
-		background: rgba(0, 0, 0, 0.65);
-		color: var(--text-primary);
-		font-size: var(--font-size-label);
-		opacity: 0;
-		pointer-events: none;
-		transition: opacity 0.15s ease, transform 0.15s ease;
-		z-index: 15;
-	}
-	.stack-zoom-hud.visible {
-		opacity: 1;
-		transform: translateX(-50%) translateY(0);
-	}
 	@media (max-width: 767px) {
 		.zoom-bar {
 			height: 36px;
 			gap: 6px;
 			padding: 0 6px;
 		}
-		.stack-zoom-wrap {
-			padding: 12px;
+		.stack-list-wrap {
+			padding: 10px;
+		}
+		.stack-list {
+			grid-template-columns: 1fr;
+			gap: 8px;
 		}
 		.stack-cell-wrap {
-			gap: 8px;
-			padding: 8px;
+			padding: 6px;
 		}
-		.stack-cell {
-			flex: 1 1 auto;
-			min-width: 0;
-		}
-		.stack-cell-canvas {
-			width: 100%;
-			height: auto;
-		}
-		.stack-cell-actions {
-			flex: 0 0 auto;
-		}
-		.zoom-group-zoom {
-			display: none;
+		/* Always show controls on touch — no reliable hover */
+		.stack-cell-handle,
+		.stack-cell-remove,
+		.stack-cell-swipe {
+			opacity: 1;
+			pointer-events: auto;
 		}
 		.zoom-bar .zoom-btn {
 			min-width: 0;
 			padding: 0 10px;
 		}
-		.stack-zoom-hud {
-			display: block;
+	}
+
+	@media (hover: none) {
+		.stack-cell-handle,
+		.stack-cell-remove,
+		.stack-cell-swipe {
+			opacity: 1;
+			pointer-events: auto;
 		}
 	}
 </style>

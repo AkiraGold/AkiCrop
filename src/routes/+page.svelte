@@ -290,11 +290,11 @@
 		carouselError = null;
 	}
 
-	function moveStackImage(index: number, dir: -1 | 1) {
-		const next = index + dir;
-		if (next < 0 || next >= stackImages.length) return;
+	function reorderStack(from: number, to: number) {
+		if (from === to || from < 0 || to < 0 || from >= stackImages.length || to >= stackImages.length) return;
 		const arr = [...stackImages];
-		[arr[index], arr[next]] = [arr[next], arr[index]];
+		const [item] = arr.splice(from, 1);
+		arr.splice(to, 0, item);
 		stackImages = arr;
 	}
 
@@ -842,7 +842,7 @@
 					onStackFiles={handleStackFiles}
 					removeStackImage={removeStackImage}
 					clearStack={clearStack}
-					moveStackImage={moveStackImage}
+					reorderStack={reorderStack}
 				/>
 			{:else}
 				<CarouselView

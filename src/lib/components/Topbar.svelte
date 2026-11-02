@@ -11,7 +11,22 @@
 </script>
 
 <header class="topbar">
-	<h1 class="topbar-title">AkiCrop</h1>
+	<div class="topbar-brand">
+		<h1 class="topbar-title">AkiCrop</h1>
+		<a
+			class="topbar-projects"
+			href="https://virtualc.xyz"
+			target="_blank"
+			rel="noopener noreferrer"
+		>
+			<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<path d="M15 3h6v6" />
+				<path d="M10 14 21 3" />
+				<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+			</svg>
+			Projects
+		</a>
+	</div>
 	<div class="topbar-mode" role="group" aria-label="Mode">
 		<a href="?mode=crop" class="topbar-mode-btn" class:selected={appMode === 'crop'} title="Crop">Crop</a>
 		<a href="?mode=carousel" class="topbar-mode-btn" class:selected={appMode === 'carousel'} title="Carousel">Carousel</a>
@@ -39,10 +54,32 @@
 		background: var(--bg-panel);
 		border-bottom: 1px solid var(--border-subtle);
 	}
+	.topbar-brand {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		min-width: 0;
+	}
 	.topbar-title {
 		font-size: var(--font-size-title);
 		font-weight: 600;
 		margin: 0;
+		color: var(--text-primary);
+	}
+	.topbar-projects {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 10px;
+		border-radius: var(--radius);
+		color: var(--text-secondary);
+		font-size: var(--font-size-label);
+		font-weight: 500;
+		text-decoration: none;
+		transition: background 0.15s, color 0.15s;
+	}
+	.topbar-projects:hover {
+		background: rgba(255, 255, 255, 0.06);
 		color: var(--text-primary);
 	}
 	.topbar-mode {

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { getCanvasDimensions, renderCanvas } from '$lib/renderer';
-	import { debounce } from '$lib/utils';
-	import { STACK_PREVIEW_MAX, STACK_ZOOM_MIN, STACK_ZOOM_MAX, STACK_ZOOM_STEP } from '$lib/constants';
-	import type { BorderType } from '$lib/types';
+	import { getCanvasDimensions, renderCanvas } from '#lib/renderer.js';
+	import { debounce } from '#lib/utils.js';
+	import { STACK_PREVIEW_MAX, STACK_ZOOM_MIN, STACK_ZOOM_MAX, STACK_ZOOM_STEP } from '#lib/constants.js';
+	import type { BorderType } from '#lib/types.js';
 
 	interface StackImage {
 		blob: Blob;

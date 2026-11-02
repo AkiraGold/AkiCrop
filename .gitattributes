@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+*.png -text -diff -merge -eol
+*.jpg -text -diff -merge -eol
+*.jpeg -text -diff -merge -eol
+*.gif -text -diff -merge -eol
+*.webp -text -diff -merge -eol
+*.ico -text -diff -merge -eol
+*.woff -text -diff -merge -eol
+*.woff2 -text -diff -merge -eol
+*.ttf -text -diff -merge -eol
+*.otf -text -diff -merge -eol
+*.eot -text -diff -merge -eol
+*.mp4 -text -diff -merge -eol
+*.webm -text -diff -merge -eol
+*.pdf -text -diff -merge -eol

@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { TEMPLATES, type TemplateId, type BorderType } from '$lib/types';
-	import { downscaleForPreview, debounce } from '$lib/utils';
-	import { getCanvasDimensions, renderCanvas } from '$lib/renderer';
+	import { page } from '$app/state';
+	import { TEMPLATES, type TemplateId, type BorderType } from '#lib/types.js';
+	import { downscaleForPreview, debounce } from '#lib/utils.js';
+	import { getCanvasDimensions, renderCanvas } from '#lib/renderer.js';
 	import {
 		MAX_PREVIEW,
 		CAROUSEL_DEFAULT_RATIO,
@@ -15,14 +15,14 @@
 		ASPECT_POPUP_THUMB_SIZE,
 		EXPORT_RESOLUTION_PRESETS,
 		type AppMode
-	} from '$lib/constants';
-	import { Topbar, ExportPreview, AspectRatioPopup, NarrowImageWarning, StackView, CarouselView, CropView, Sidebar } from '$lib/components';
+	} from '#lib/constants.js';
+	import { Topbar, ExportPreview, AspectRatioPopup, NarrowImageWarning, StackView, CarouselView, CropView, Sidebar } from '#lib/components/index.js';
 
 	// Mode from URL only. Toggle is real <a> links so navigation updates $page and the UI.
 	// Avoid url.searchParams during prerender (static build) — not available then
 	const appMode = $derived.by(() => {
 		if (typeof window === 'undefined') return 'crop' as AppMode;
-		const mode = $page.url.searchParams.get('mode');
+		const mode = page.url.searchParams.get('mode');
 		if (mode === 'carousel') return 'carousel' as AppMode;
 		if (mode === 'stack') return 'stack' as AppMode;
 		return 'crop' as AppMode;
@@ -142,7 +142,7 @@
 		const w = carouselImage.width;
 		const h = carouselImage.height;
 		const r = carouselPanelRatio;
-		const fit = Math.ceil((w / h) * (1 / r));
+		const fit = Math.ceil(w / h * (1 / r));
 		return Math.max(2, Math.min(20, fit - 1));
 	});
 	const carouselPanelCount = $derived.by(() => {
@@ -175,7 +175,7 @@
 		const h = carouselImage.height;
 		const n = carouselPanelCount;
 		// Fill when slice aspect = inner panel aspect: viewWidth/n / h = innerW/innerH => zoom% = 100*w*innerH/(n*h*innerW)
-		const fillZoom = (100 * w * innerH) / (n * h * innerW);
+		const fillZoom = 100 * w * innerH / (n * h * innerW);
 		const nudge = Math.max(0.3, fillZoom * 0.005); // 0.5% past fill, minimal overshoot
 		return Math.round(Math.max(100, Math.min(400, fillZoom + nudge)));
 	});
@@ -824,7 +824,10 @@
 
 </script>
 
-<svelte:window onkeydown={onKeydown} onpointerup={() => setSliderActive(null)} />
+<svelte:window
+	onkeydown={onKeydown}
+	onpointerup={() => setSliderActive(null)}
+></svelte:window>
 
 <a id="download-link" class="download-link" href="#" download> </a>
 <div class="app">
@@ -908,8 +911,8 @@
 			onClearCropImage={clearCropImage}
 			onClearCarouselImage={clearCarouselImage}
 			fillMode={fillMode}
-			onFillModeContain={() => (fillMode = 'contain')}
-			onFillModeCover={() => (fillMode = 'cover')}
+			onFillModeContain={() => fillMode = 'contain'}
+			onFillModeCover={() => fillMode = 'cover'}
 			bind:customRatioW
 			bind:customRatioH
 			showCustomRatio={currentTemplateId === 'custom'}
@@ -921,7 +924,7 @@
 			carouselPanelCountOverride={carouselPanelCountOverride}
 			carouselPanelCountAuto={carouselPanelCountAuto}
 			carouselPanelCount={carouselPanelCount}
-			onCarouselPanelCountOverride={(v) => (carouselPanelCountOverride = v)}
+			onCarouselPanelCountOverride={(v) => carouselPanelCountOverride = v}
 			bind:carouselZoom
 			carouselZoomMin={carouselZoomMin}
 			carouselZoomMax={carouselZoomMax}
@@ -936,10 +939,10 @@
 		panels={exportPreviewPanels}
 		canUseShare={canUseShare}
 		exportFormat={exportFormat}
-		onSetExportFormat={(f) => (exportFormat = f)}
+		onSetExportFormat={(f) => exportFormat = f}
 		bind:exportQuality
 		exportResolutionId={exportResolutionId}
-		onSetExportResolutionId={(id) => (exportResolutionId = id)}
+		onSetExportResolutionId={(id) => exportResolutionId = id}
 		resolutionPresets={EXPORT_RESOLUTION_PRESETS}
 		onExportOptionsChange={regenerateExportPanels}
 		regenerating={exportPreviewRegenerating}
@@ -962,12 +965,12 @@
 		selectedTemplateId={currentTemplateId}
 		aspectPopupPendingTemplateId={aspectPopupPendingTemplateId}
 		onClose={closeAspectPopup}
-		onFillModeContain={() => (fillMode = 'contain')}
-		onFillModeCover={() => (fillMode = 'cover')}
+		onFillModeContain={() => fillMode = 'contain'}
+		onFillModeCover={() => fillMode = 'cover'}
 		onAspectThumbClick={onAspectThumbClick}
 		onAspectThumbDblClick={onAspectThumbDblClick}
 		onConfirm={confirmAspectSelection}
-		onContentEl={(el) => (aspectPopupContentEl = el)}
+		onContentEl={(el) => aspectPopupContentEl = el}
 	/>
 
 	<NarrowImageWarning

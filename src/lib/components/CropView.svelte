@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { getCanvasDimensions, renderCanvas } from '$lib/renderer';
-	import { debounce } from '$lib/utils';
-	import { MAX_PREVIEW, MAX_ZOOM, ZOOM_RETURN_DURATION } from '$lib/constants';
-	import type { BorderType } from '$lib/types';
+	import { getCanvasDimensions, renderCanvas } from '#lib/renderer.js';
+	import { debounce } from '#lib/utils.js';
+	import { MAX_PREVIEW, MAX_ZOOM, ZOOM_RETURN_DURATION } from '#lib/constants.js';
+	import type { BorderType } from '#lib/types.js';
 
 	interface Props {
 		viewportEl?: HTMLDivElement | null;

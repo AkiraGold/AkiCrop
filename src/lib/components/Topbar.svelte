@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { AppMode } from '$lib/constants';
+	import type { AppMode } from '#lib/constants.js';
 
 	interface Props {
 		appMode: AppMode;

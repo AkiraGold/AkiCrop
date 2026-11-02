@@ -1,13 +1,21 @@
 /**
  * AkiCrop – Minimal service worker for offline caching (optional for Add to Home Screen).
  */
-import { base, build, files, version } from '$service-worker';
+import { version } from '$app/env';
+import { assets, immutable } from '$app/manifest';
+import { resolve } from '$app/paths';
 
 const CACHE = `akicrop-${version}`;
 
+// `immutable`/`assets` paths are relative to the base path — resolve to absolute pathnames
+const ASSETS = [
+	...immutable.map((file) => resolve(file.path)),
+	...assets.map((file) => resolve(file.path))
+];
+
 self.addEventListener('install', (event) => {
 	event.waitUntil(
-		caches.open(CACHE).then((cache) => cache.addAll([...build, ...files]))
+		caches.open(CACHE).then((cache) => cache.addAll(ASSETS))
 	);
 	self.skipWaiting();
 });
@@ -23,9 +31,28 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
 	if (event.request.method !== 'GET') return;
-	const url = new URL(event.request.url);
-	if (url.origin !== location.origin || !url.pathname.startsWith(base)) return;
+
 	event.respondWith(
-		caches.match(event.request).then((cached) => cached || fetch(event.request))
+		(async () => {
+			const url = new URL(event.request.url);
+			const cache = await caches.open(CACHE);
+
+			if (ASSETS.includes(url.pathname)) {
+				const cached = await cache.match(url.pathname);
+				if (cached) return cached;
+			}
+
+			try {
+				const response = await fetch(event.request);
+				if (response.status === 200 && !response.headers.get('cache-control')?.includes('no-store')) {
+					void cache.put(event.request, response.clone());
+				}
+				return response;
+			} catch {
+				const cached = await cache.match(event.request);
+				if (cached) return cached;
+				throw new Error(`Network error and no cached response for ${event.request.url}`);
+			}
+		})()
 	);
 });

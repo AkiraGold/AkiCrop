@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { getCanvasDimensions, renderCanvas } from '$lib/renderer';
-	import { debounce } from '$lib/utils';
+	import { getCanvasDimensions, renderCanvas } from '#lib/renderer.js';
+	import { debounce } from '#lib/utils.js';
 
 	interface Props {
 		viewportEl?: HTMLDivElement | null;

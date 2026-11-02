@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { TEMPLATES } from '$lib/types';
-	import type { TemplateId } from '$lib/types';
-	import { ASPECT_POPUP_ROWS } from '$lib/constants';
+	import { TEMPLATES } from '#lib/types.js';
+	import type { TemplateId } from '#lib/types.js';
+	import { ASPECT_POPUP_ROWS } from '#lib/constants.js';
 
 	interface Props {
 		open: boolean;

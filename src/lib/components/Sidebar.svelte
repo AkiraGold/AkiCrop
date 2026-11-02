@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { TemplateId, BorderType } from '$lib/types';
-	import type { AppMode } from '$lib/constants';
+	import type { TemplateId, BorderType } from '#lib/types.js';
+	import type { AppMode } from '#lib/constants.js';
 
 	interface Props {
 		appMode: AppMode;

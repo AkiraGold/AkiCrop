@@ -18,8 +18,7 @@
 	} from '#lib/constants.js';
 	import { Topbar, ExportPreview, AspectRatioPopup, NarrowImageWarning, StackView, CarouselView, CropView, Sidebar } from '#lib/components/index.js';
 
-	// Mode from URL only. Toggle is real <a> links so navigation updates $page and the UI.
-	// Avoid url.searchParams during prerender (static build) — not available then
+	// searchParams unavailable during prerender
 	const appMode = $derived.by(() => {
 		if (typeof window === 'undefined') return 'crop' as AppMode;
 		const mode = page.url.searchParams.get('mode');
@@ -46,28 +45,19 @@
 	let loading = $state(false);
 	let exportLoading = $state(false);
 
-	// Export preview popup (carousel or stack): final panel images + download/share
 	let exportPreviewOpen = $state(false);
 	let exportPreviewPanels = $state<{ url: string; blob: Blob }[]>([]);
-	/** Set when opening preview so filenames use akicrop-stack-N vs akicrop-panel-N */
 	let exportPreviewKind = $state<'carousel' | 'stack' | null>(null);
-	/** Format used for current preview panels (for correct file extension on download/share). */
 	let exportPreviewFormat = $state<'image/png' | 'image/jpeg'>('image/png');
-	/** True while regenerating panels inside the export dialog (no full-page spinner). */
 	let exportPreviewRegenerating = $state(false);
-	/** Incremented when options change; only the latest regeneration applies. */
 	let exportRegenerationVersion = $state(0);
 
-	// Aspect ratio popup (after add image or "More ratios…")
 	let aspectRatioPopupOpen = $state(false);
 	let aspectPopupContentEl = $state<HTMLDivElement | null>(null);
-	/** Pending selection in popup; applied to canvas only on Confirm or double-click. */
 	let aspectPopupPendingTemplateId = $state<TemplateId | null>(null);
 	let aspectPopupFocusOnce = $state(false);
-	// Fill = cover (zoom to fill), Fit = contain (letterbox). Shared by Crop, popup previews, Carousel, Stack.
 	let fillMode = $state<'contain' | 'cover'>('contain');
 
-	// Export options: format, quality (for JPEG), resolution (max longest side; null = original)
 	let exportFormat = $state<'image/png' | 'image/jpeg'>('image/png');
 	let exportQuality = $state(0.92);
 	let exportResolutionId = $state('original');
@@ -82,14 +72,12 @@
 		typeof navigator !== 'undefined' && typeof navigator.share === 'function'
 	);
 
-	/** Sidebar tools are disabled until the current mode has an image. */
 	const sidebarHasImage = $derived.by(() => {
 		if (appMode === 'crop') return !!previewImage;
 		if (appMode === 'stack') return stackImages.length > 0;
 		return !!carouselImage;
 	});
 
-	/** Image used for aspect-ratio popup thumbnails and Original ratio: Crop/Carousel use current image; Stack uses first image. */
 	const aspectPopupImage = $derived.by(() => {
 		if (appMode === 'crop') return previewImage;
 		if (appMode === 'carousel') return carouselImage;
@@ -97,20 +85,17 @@
 		return previewImage || carouselImage;
 	});
 
-	// Carousel mode: independent image and panels (Instagram portrait strips)
 	let carouselImage = $state<ImageBitmap | null>(null);
 	let carouselOriginalBlob = $state<Blob | null>(null);
 	let carouselOriginalWidth = $state(0);
 	let carouselOriginalHeight = $state(0);
-	let carouselPanelCountOverride = $state<number | null>(null); // null = auto from aspect
+	let carouselPanelCountOverride = $state<number | null>(null); // null = auto
 	let carouselError = $state<string | null>(null);
-	let carouselZoom = $state(100); // 100 = fill frame; >100 zoom in (crop more), <100 zoom out
-	let carouselNarrowImageWarning = $state(false); // image not wide enough for carousel
+	let carouselZoom = $state(100);
+	let carouselNarrowImageWarning = $state(false);
 
-	// Stack mode: ordered list of images, one aspect ratio for all
 	type StackImage = { blob: Blob; preview: ImageBitmap };
 	let stackImages = $state<StackImage[]>([]);
-	/** Template selection is per mode so changing aspect in crop doesn't affect carousel/stack. */
 	const currentTemplateId = $derived.by(() =>
 		appMode === 'crop' ? cropSelectedTemplateId : appMode === 'carousel' ? carouselSelectedTemplateId : stackSelectedTemplateId
 	);
@@ -136,7 +121,7 @@
 
 	const carouselPanelRatio = $derived(carouselTemplateRatio);
 
-	// Carousel: auto = one fewer panel than "full fit"; user can pick 2..auto (no single panel, no more than auto)
+	// Auto panels = floor(full-fit) - 1, clamped to 2..20
 	const carouselPanelCountAuto = $derived.by(() => {
 		if (!carouselImage) return 2;
 		const w = carouselImage.width;
@@ -150,7 +135,6 @@
 		if (carouselPanelCountOverride != null) return Math.max(2, Math.min(auto, carouselPanelCountOverride));
 		return auto;
 	});
-	// Fixed panel size: fit inside container minus padding and gaps. Same size at all zoom levels.
 	const carouselPanelDims = $derived.by(() => {
 		const n = carouselPanelCount;
 		if (n < 1) return { width: 0, height: 0 };
@@ -163,7 +147,6 @@
 		return { width: panelWidth, height: panelHeight };
 	});
 
-	// Zoom range: 100% = full width; max = zoom at which slice fills inner panel (after padding), then cover; nudge past so no sliver
 	const carouselZoomMin = 100;
 	const carouselZoomMax = $derived.by(() => {
 		if (!carouselImage || carouselPanelCount < 1) return 200;
@@ -174,9 +157,9 @@
 		const w = carouselImage.width;
 		const h = carouselImage.height;
 		const n = carouselPanelCount;
-		// Fill when slice aspect = inner panel aspect: viewWidth/n / h = innerW/innerH => zoom% = 100*w*innerH/(n*h*innerW)
+		// Zoom where slice fills padded panel; nudge slightly past to avoid edge sliver
 		const fillZoom = 100 * w * innerH / (n * h * innerW);
-		const nudge = Math.max(0.3, fillZoom * 0.005); // 0.5% past fill, minimal overshoot
+		const nudge = Math.max(0.3, fillZoom * 0.005);
 		return Math.round(Math.max(100, Math.min(400, fillZoom + nudge)));
 	});
 
@@ -190,7 +173,6 @@
 				)
 			: { width: 0, height: 0 }
 	);
-	// Scale preview to fit viewport so it never overflows (no scroll)
 	const previewDims = $derived.by(() => {
 		const base = basePreviewDims;
 		if (base.width <= 0 || base.height <= 0) return base;
@@ -203,9 +185,6 @@
 		};
 	});
 
-	// previewDims kept for crop export (scale in download())
-
-	// Clamp zoom to range when image or max changes
 	$effect(() => {
 		const max = carouselZoomMax;
 		const min = carouselZoomMin;
@@ -213,7 +192,6 @@
 		if (carouselZoom < min) carouselZoom = min;
 	});
 
-	// Clamp panel override to [2, auto] when image/auto changes
 	$effect(() => {
 		const auto = carouselPanelCountAuto;
 		if (carouselPanelCountOverride != null) {
@@ -222,14 +200,13 @@
 		}
 	});
 
-	// In Carousel, "Original" isn't meaningful (panels are slices); normalize to 4:5
+	// Carousel panels are slices — Original aspect is meaningless
 	$effect(() => {
 		if (carouselSelectedTemplateId === 'original') {
 			carouselSelectedTemplateId = '4:5';
 		}
 	});
 
-	// Measure canvas container so preview fits viewport (no overflow/scroll)
 	$effect(() => {
 		const el = canvasWrapEl;
 		if (!el) return;
@@ -266,7 +243,6 @@
 				carouselOriginalHeight = bitmap.height;
 				carouselImage = await downscaleForPreview(bitmap);
 				if (bitmap !== carouselImage) bitmap.close();
-				// Warn if image isn't wide enough for a sensible 2-panel carousel (aspect >= 8/5)
 				if (carouselOriginalWidth / carouselOriginalHeight < 8 / 5) {
 					carouselNarrowImageWarning = true;
 				}
@@ -491,7 +467,6 @@
 			exportLoading = false;
 			return;
 		}
-		// Crop mode
 		if (!originalBlob || !previewImage) return;
 		exportLoading = true;
 		try {
@@ -682,7 +657,6 @@
 		aspectPopupPendingTemplateId = null;
 	}
 
-	/** Canonical W∶H for presets (used to fill custom inputs). Original/custom have no fixed values. */
 	function getPresetRatioValues(id: TemplateId): { w: number; h: number } | null {
 		const map: Record<string, { w: number; h: number }> = {
 			'1:1': { w: 1, h: 1 },
@@ -696,7 +670,6 @@
 		return map[id] ?? null;
 	}
 
-	/** Find a preset that matches current custom W/H (within tolerance), or 'custom'. */
 	function getTemplateFromCustomRatio(): TemplateId {
 		const w = Math.max(0.1, customRatioW);
 		const h = Math.max(0.1, customRatioH);
@@ -714,7 +687,6 @@
 		closeAspectPopup();
 	}
 
-	/** Single click: set pending selection and fill custom inputs (ratio not applied until Confirm). */
 	function onAspectThumbClick(id: TemplateId) {
 		const container = aspectPopupContentEl;
 		const scrollTop = container?.scrollTop ?? 0;
@@ -735,7 +707,6 @@
 		});
 	}
 
-	/** Double-click: apply selection and close. */
 	function onAspectThumbDblClick(id: TemplateId) {
 		setTemplate(id);
 		const values = getPresetRatioValues(id);
@@ -752,7 +723,6 @@
 		closeAspectPopup();
 	}
 
-	/** Confirm: apply current custom ratio (or matching preset) to current mode and close. */
 	function confirmAspectSelection() {
 		setTemplate(getTemplateFromCustomRatio());
 		closeAspectPopup();
@@ -767,7 +737,7 @@
 		sliderActive = id;
 	}
 
-	// Prevent the base page from ever scrolling or bouncing (e.g. iOS rubber-band).
+	// Lock page scroll / iOS rubber-band
 	$effect(() => {
 		if (typeof document === 'undefined') return;
 		const html = document.documentElement;
@@ -784,7 +754,6 @@
 		};
 	});
 
-	// Draw aspect popup thumbnails when popup opens and we have an image
 	$effect(() => {
 		if (!aspectRatioPopupOpen || !aspectPopupContentEl) return;
 		const img = aspectPopupImage;

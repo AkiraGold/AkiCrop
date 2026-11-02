@@ -1,13 +1,10 @@
-/**
- * AkiCrop – Minimal service worker for offline caching (optional for Add to Home Screen).
- */
 import { version } from '$app/env';
 import { assets, immutable } from '$app/manifest';
 import { resolve } from '$app/paths';
 
 const CACHE = `akicrop-${version}`;
 
-// `immutable`/`assets` paths are relative to the base path — resolve to absolute pathnames
+// Manifest paths are relative to base — resolve for cache matching
 const ASSETS = [
 	...immutable.map((file) => resolve(file.path)),
 	...assets.map((file) => resolve(file.path))

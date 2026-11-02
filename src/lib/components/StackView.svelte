@@ -104,7 +104,6 @@
 		stackStoryIndex = Math.min(stackImages.length - 1, stackStoryIndex + 1);
 	}
 
-	// List view: render cell canvases by index
 	const debouncedStackRender = debounce(() => {
 		if (!stackListEl || !stackImages.length) return;
 		for (let i = 0; i < stackImages.length; i++) {
@@ -442,7 +441,7 @@
 		pointer-events: auto;
 		position: relative;
 	}
-	/* Hide native file input; label shows "Add images" as a button, overlay handles full-area click */
+	/* visually hidden; label is the control */
 	.drop-message input[type="file"] {
 		position: absolute;
 		opacity: 0;

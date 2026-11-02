@@ -1,13 +1,5 @@
-/**
- * AkiCrop – Helper utilities: downscale for preview, color averaging, debounce.
- */
-
 const MAX_PREVIEW_SIZE = 2048;
 
-/**
- * Get width/height of an image, optionally downscaled so longest side <= maxSize.
- * Returns new dimensions and optionally a new ImageBitmap (for preview use).
- */
 export function getDownscaledDimensions(
 	source: ImageBitmap | HTMLImageElement,
 	maxSize: number = MAX_PREVIEW_SIZE
@@ -23,10 +15,7 @@ export function getDownscaledDimensions(
 	};
 }
 
-/**
- * Create a downscaled ImageBitmap for preview (max 2048 on longest side).
- * Caller should use createImageBitmap from the original blob for export.
- */
+/** Downscale for preview (max 2048 longest side). Use original blob for export. */
 export async function downscaleForPreview(
 	source: ImageBitmap | HTMLImageElement
 ): Promise<ImageBitmap> {
@@ -40,9 +29,7 @@ export async function downscaleForPreview(
 	return createImageBitmap(canvas);
 }
 
-/**
- * Sample pixels along the four edges of the image and return average color as hex.
- */
+/** Average color of the four image edges as hex. */
 export function calculateAverageEdgeColor(
 	image: ImageBitmap | HTMLImageElement,
 	sampleWidth: number = 20
@@ -59,7 +46,6 @@ export function calculateAverageEdgeColor(
 		count = 0;
 
 	try {
-		// Top
 		if (h > 0) {
 			const top = ctx.getImageData(0, 0, w, Math.min(band, h));
 			for (let i = 0; i < top.data.length; i += 4) {
@@ -69,7 +55,6 @@ export function calculateAverageEdgeColor(
 				count++;
 			}
 		}
-		// Bottom
 		if (h > band) {
 			const bottom = ctx.getImageData(0, h - band, w, band);
 			for (let i = 0; i < bottom.data.length; i += 4) {
@@ -79,7 +64,6 @@ export function calculateAverageEdgeColor(
 				count++;
 			}
 		}
-		// Left
 		if (w > 0) {
 			const left = ctx.getImageData(0, 0, Math.min(band, w), h);
 			for (let i = 0; i < left.data.length; i += 4) {
@@ -89,7 +73,6 @@ export function calculateAverageEdgeColor(
 				count++;
 			}
 		}
-		// Right
 		if (w > band) {
 			const right = ctx.getImageData(w - band, 0, band, h);
 			for (let i = 0; i < right.data.length; i += 4) {
@@ -110,9 +93,6 @@ export function calculateAverageEdgeColor(
 	return '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-/**
- * Debounce a function (e.g. 16ms for live preview).
- */
 export function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): (...args: Parameters<T>) => void {
 	let timeout: ReturnType<typeof setTimeout>;
 	return (...args: Parameters<T>) => {

@@ -23,7 +23,6 @@
 		padding: number;
 		sliderActive: 'padding' | 'blur' | 'zoom' | null;
 		onSetSliderActive: (id: 'padding' | 'blur' | 'zoom' | null) => void;
-		// Carousel-only
 		carouselPanelCountOverride: number | null;
 		carouselPanelCountAuto: number;
 		carouselPanelCount: number;

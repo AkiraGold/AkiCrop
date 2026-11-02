@@ -1,15 +1,7 @@
-/**
- * AkiCrop – Canvas rendering logic (no UI). Used for both preview and full-res export.
- */
-
 import type { RenderOptions } from './types';
 import { calculateAverageEdgeColor } from './utils';
 
-/**
- * Compute canvas width/height from template ratio and image dimensions.
- * If maxSize is set (e.g. 2048), cap the longest side for preview.
- * If ratio is 0, use image aspect ratio.
- */
+/** Canvas size for template ratio; ratio 0 = image aspect. Caps longest side when maxSize set. */
 export function getCanvasDimensions(
 	imageWidth: number,
 	imageHeight: number,
@@ -17,7 +9,6 @@ export function getCanvasDimensions(
 	maxSize?: number
 ): { width: number; height: number } {
 	const ratio = templateRatio > 0 ? templateRatio : imageWidth / imageHeight;
-	// Canvas fits the image inside the aspect ratio (letterbox/pillarbox).
 	let width: number, height: number;
 	if (imageWidth / imageHeight > ratio) {
 		width = imageWidth;
@@ -47,9 +38,7 @@ export function drawSolidBackground(
 	ctx.fillRect(0, 0, width, height);
 }
 
-/**
- * Separable box blur using getImageData/putImageData. Works in all browsers (Safari, PWA) where ctx.filter may not.
- */
+/** Separable box blur via getImageData — works where ctx.filter does not (Safari/PWA). */
 function boxBlurCanvas(
 	sourceCtx: CanvasRenderingContext2D,
 	width: number,
@@ -57,7 +46,7 @@ function boxBlurCanvas(
 	radius: number
 ): void {
 	if (radius <= 0) return;
-	// Cap radius so blur stays fast on large canvases (box blur is O(radius * width * height))
+	// Cap radius: box blur is O(radius * width * height)
 	const radiusI = Math.min(Math.floor(radius), 40);
 	const data = sourceCtx.getImageData(0, 0, width, height);
 	const src = data.data;
@@ -65,7 +54,6 @@ function boxBlurCanvas(
 	const n = 2 * radiusI + 1;
 	const scale = 1 / n;
 
-	// Horizontal pass
 	for (let y = 0; y < height; y++) {
 		for (let x = 0; x < width; x++) {
 			let r = 0, g = 0, b = 0, a = 0;
@@ -85,7 +73,6 @@ function boxBlurCanvas(
 		}
 	}
 
-	// Vertical pass (read from tmp, write to src)
 	for (let y = 0; y < height; y++) {
 		for (let x = 0; x < width; x++) {
 			let r = 0, g = 0, b = 0, a = 0;
@@ -108,14 +95,9 @@ function boxBlurCanvas(
 	sourceCtx.putImageData(data, 0, 0);
 }
 
-/** Max size of the buffer we blur (downscale → blur → upscale for speed). */
 const BLUR_BUFFER_MAX = 256;
 
-/**
- * Draw image scaled to cover canvas, then blur.
- * Uses downscale → box blur → upscale so blur runs on a tiny buffer (much faster, same look).
- * When sourceRect is set, only that region of the image is used (e.g. carousel panel).
- */
+/** Cover-draw then blur; downscale → blur → upscale for speed. */
 export function drawBlurBackground(
 	ctx: CanvasRenderingContext2D,
 	image: ImageBitmap | HTMLImageElement,
@@ -158,7 +140,6 @@ export function drawBlurBackground(
 		return;
 	}
 
-	// Blur on a small buffer then scale up (big speedup, visually the same for a blurred bg)
 	const longest = Math.max(width, height);
 	const scaleDown = Math.min(1, BLUR_BUFFER_MAX / longest);
 	const bw = Math.max(1, Math.round(width * scaleDown));
@@ -174,11 +155,6 @@ export function drawBlurBackground(
 	ctx.drawImage(small, 0, 0, bw, bh, 0, 0, width, height);
 }
 
-/**
- * Draw foreground image inside (width - 2*padding) x (height - 2*padding).
- * contain = aspect-fit, centered, with borders; cover = zoom to fill, centered, crop overflow.
- * zoom multiplies the scale (e.g. carousel zoom slider). When sourceRect is set, only that region is drawn.
- */
 export function drawForegroundImage(
 	ctx: CanvasRenderingContext2D,
 	image: ImageBitmap | HTMLImageElement,
@@ -216,9 +192,6 @@ export function drawForegroundImage(
 	if (fillMode === 'cover') ctx.restore();
 }
 
-/**
- * Main entry: render the full composition to the canvas.
- */
 export function renderCanvas(
 	canvas: HTMLCanvasElement | OffscreenCanvas,
 	options: RenderOptions

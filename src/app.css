@@ -1,4 +1,3 @@
-/* AkiCrop – iPad-style theme */
 :root {
 	--adobe-blue: #3b63fb;
 	--sidebar-width: 320px;
@@ -18,7 +17,6 @@
 	--font-size-title: 16px;
 	--radius: 6px;
 	--touch-min: 44px;
-	/* Slider: left of handle = light, right of handle = dark (two solid segments) */
 	--track-light: #a2a2a2;
 	--track-dark: #393939;
 }
@@ -38,7 +36,6 @@ html, body {
 	-webkit-tap-highlight-color: transparent;
 }
 
-/* Shared buttons – used by Topbar, Sidebar, modals, workspaces */
 .btn {
 	min-height: 36px;
 	padding: 8px 16px;

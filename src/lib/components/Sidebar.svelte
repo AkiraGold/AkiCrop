@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount, tick, untrack } from 'svelte';
 	import type { TemplateId, BorderType } from '#lib/types.js';
 	import type { AppMode } from '#lib/constants.js';
 
@@ -66,6 +67,104 @@
 	}: Props = $props();
 
 	let panelsDropdownOpen = $state(false);
+	let narrowUi = $state(false);
+	let panelCollapsed = $state(false);
+	let panelHeightPx = $state(260);
+	let panelManualHeight = $state(false);
+	let resizeStartY = 0;
+	let resizeStartH = 0;
+	let panelResizing = $state(false);
+	let mobileBarEl = $state<HTMLDivElement | null>(null);
+	let sidebarBodyEl = $state<HTMLDivElement | null>(null);
+	let canScrollUp = $state(false);
+	let canScrollDown = $state(false);
+	let lastBorderType: BorderType | null = null;
+	let lastPanelMode: AppMode | null = null;
+	let lastHadImage = false;
+	let panelReady = $state(false);
+	let panelMeasuring = $state(false);
+	let scrollTopByMode: Partial<Record<AppMode, number>> = {};
+	let heightByMode: Partial<Record<AppMode, number>> = {};
+
+	const PANEL_H_MIN = 140;
+	const PANEL_H_MAX_VH = 0.85;
+	const hasImage = $derived(!disabled);
+
+	function panelStorageKey(kind: 'h' | 'manual' | 'collapsed', mode: AppMode) {
+		return `akicrop-mobile-panel-${kind}-${mode}`;
+	}
+
+	function readPanelState(mode: AppMode): {
+		collapsed: boolean;
+		manual: boolean;
+		height: number | null;
+	} {
+		try {
+			const collapsedRaw = localStorage.getItem(panelStorageKey('collapsed', mode));
+			const manualRaw = localStorage.getItem(panelStorageKey('manual', mode));
+			const heightRaw = localStorage.getItem(panelStorageKey('h', mode));
+			const legacyCollapsed = localStorage.getItem('akicrop-mobile-panel-collapsed');
+			const legacyManual = localStorage.getItem('akicrop-mobile-panel-manual');
+			const legacyH = localStorage.getItem('akicrop-mobile-panel-h');
+			const collapsed =
+				collapsedRaw !== null ? collapsedRaw === '1' : legacyCollapsed === '1';
+			const manual = manualRaw !== null ? manualRaw === '1' : legacyManual === '1';
+			const heightNum = Number(heightRaw ?? legacyH);
+			return {
+				collapsed,
+				manual,
+				height: Number.isFinite(heightNum) && heightNum > 0 ? heightNum : null
+			};
+		} catch {
+			return { collapsed: false, manual: false, height: null };
+		}
+	}
+
+	function writePanelState(
+		mode: AppMode,
+		state: { collapsed?: boolean; manual?: boolean; height?: number }
+	) {
+		try {
+			if (state.collapsed !== undefined) {
+				localStorage.setItem(panelStorageKey('collapsed', mode), state.collapsed ? '1' : '0');
+			}
+			if (state.manual !== undefined) {
+				if (state.manual) localStorage.setItem(panelStorageKey('manual', mode), '1');
+				else localStorage.removeItem(panelStorageKey('manual', mode));
+			}
+			if (state.height !== undefined) {
+				localStorage.setItem(panelStorageKey('h', mode), String(state.height));
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+
+	function applyPanelState(mode: AppMode) {
+		const stored = readPanelState(mode);
+		panelCollapsed = stored.collapsed;
+		panelManualHeight = stored.manual;
+		const remembered = heightByMode[mode] ?? stored.height;
+		if (remembered != null) {
+			panelHeightPx = remembered;
+			heightByMode[mode] = remembered;
+		} else {
+			panelManualHeight = false;
+		}
+	}
+
+	function persistCurrentPanelState(mode: AppMode = appMode) {
+		heightByMode[mode] = panelHeightPx;
+		writePanelState(mode, {
+			collapsed: panelCollapsed,
+			manual: panelManualHeight,
+			height: panelHeightPx
+		});
+	}
+
+	function nextFrame() {
+		return new Promise<void>((r) => requestAnimationFrame(() => r()));
+	}
 
 	const cropStackTemplates: { id: TemplateId; label: string }[] = [
 		{ id: '1:1', label: '1:1' },
@@ -78,10 +177,305 @@
 		{ id: '4:5', label: '4:5' },
 		{ id: '16:9', label: '16:9' }
 	];
+
+	function measureBodyContentHeight(): number {
+		const el = sidebarBodyEl;
+		if (!el) return 0;
+		let sum = 0;
+		const kids = el.children;
+		for (let i = 0; i < kids.length; i++) {
+			sum += (kids[i] as HTMLElement).offsetHeight;
+		}
+		const style = getComputedStyle(el);
+		if (kids.length > 1) {
+			const gap = Number.parseFloat(style.rowGap || style.gap || '0') || 0;
+			sum += gap * (kids.length - 1);
+		}
+		const padY =
+			(Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+		return sum + padY;
+	}
+
+	function contentPanelHeight(): number {
+		const barH = mobileBarEl?.offsetHeight ?? 0;
+		return barH + measureBodyContentHeight();
+	}
+
+	function viewportPanelCap(): number {
+		return Math.round(window.innerHeight * PANEL_H_MAX_VH);
+	}
+
+	function maxPanelHeight(): number {
+		const vhMax = viewportPanelCap();
+		const contentMax = contentPanelHeight();
+		return contentMax > 0 ? Math.min(contentMax, vhMax) : vhMax;
+	}
+
+	function clampPanelHeight(h: number): number {
+		const max = maxPanelHeight();
+		const min = Math.min(PANEL_H_MIN, max);
+		return Math.max(min, Math.min(max, Math.round(h)));
+	}
+
+	function updateScrollHints() {
+		const el = sidebarBodyEl;
+		let up = false;
+		let down = false;
+		if (el && !panelCollapsed) {
+			const maxScroll = el.scrollHeight - el.clientHeight;
+			up = maxScroll > 2 && el.scrollTop > 2;
+			down = maxScroll > 2 && el.scrollTop < maxScroll - 2;
+		}
+		if (up !== canScrollUp) canScrollUp = up;
+		if (down !== canScrollDown) canScrollDown = down;
+	}
+
+	function setPanelHeight(h: number) {
+		const next = clampPanelHeight(h);
+		if (next !== panelHeightPx) panelHeightPx = next;
+	}
+
+	async function fitPanelToContent(retries = 8, force = false) {
+		const allow = untrack(
+			() => narrowUi && !panelCollapsed && hasImage && (force || !panelManualHeight)
+		);
+		if (!allow) return;
+		panelMeasuring = true;
+		let best = 0;
+		let prev = -1;
+		const frames = force ? retries : Math.min(retries, 4);
+		try {
+			for (let i = 0; i < frames; i++) {
+				await tick();
+				await nextFrame();
+				if (untrack(() => panelCollapsed || !narrowUi || !hasImage)) return;
+				best = Math.max(best, contentPanelHeight());
+				if (i > 1 && best >= PANEL_H_MIN && best === prev) break;
+				prev = best;
+			}
+		} finally {
+			panelMeasuring = false;
+		}
+		if (best <= 0) return;
+		const next = Math.max(PANEL_H_MIN, Math.min(best, viewportPanelCap()));
+		untrack(() => {
+			panelHeightPx = next;
+			heightByMode[appMode] = next;
+		});
+		await tick();
+		updateScrollHints();
+	}
+
+	function revealPanelBottom() {
+		if (!narrowUi || !hasImage || panelCollapsed) return;
+		sidebarBodyEl?.scrollTo({ top: sidebarBodyEl.scrollHeight, behavior: 'smooth' });
+		requestAnimationFrame(() => updateScrollHints());
+	}
+
+	async function restorePanelAfterExpand(mode: AppMode) {
+		await tick();
+		await nextFrame();
+		await nextFrame();
+		const storedH = heightByMode[mode] ?? readPanelState(mode).height;
+		panelMeasuring = true;
+		await tick();
+		await nextFrame();
+		const contentH = contentPanelHeight();
+		panelMeasuring = false;
+		const contentMax =
+			contentH > 0 ? Math.min(contentH, viewportPanelCap()) : viewportPanelCap();
+		if (storedH != null && storedH > 0) {
+			panelHeightPx = Math.max(PANEL_H_MIN, Math.min(Math.round(storedH), contentMax));
+			heightByMode[mode] = panelHeightPx;
+		} else {
+			await fitPanelToContent(10, true);
+		}
+		persistCurrentPanelState(mode);
+		await tick();
+		if (sidebarBodyEl) {
+			sidebarBodyEl.scrollTop = scrollTopByMode[mode] ?? 0;
+			updateScrollHints();
+		}
+	}
+
+	function togglePanelCollapsed() {
+		const mode = appMode;
+		if (!panelCollapsed) {
+			if (sidebarBodyEl) scrollTopByMode[mode] = sidebarBodyEl.scrollTop;
+			heightByMode[mode] = panelHeightPx;
+			panelCollapsed = true;
+			persistCurrentPanelState(mode);
+			canScrollUp = false;
+			canScrollDown = false;
+			return;
+		}
+		panelCollapsed = false;
+		persistCurrentPanelState(mode);
+		void restorePanelAfterExpand(mode);
+	}
+
+	function onPanelResizePointerDown(e: PointerEvent) {
+		if (!narrowUi || panelCollapsed) return;
+		e.preventDefault();
+		const el = e.currentTarget as HTMLElement;
+		el.setPointerCapture(e.pointerId);
+		panelResizing = true;
+		resizeStartY = e.clientY;
+		resizeStartH = panelHeightPx;
+	}
+
+	function onPanelResizePointerMove(e: PointerEvent) {
+		if (!panelResizing) return;
+		setPanelHeight(resizeStartH + (resizeStartY - e.clientY));
+		updateScrollHints();
+	}
+
+	function onPanelResizePointerUp(e: PointerEvent) {
+		if (!panelResizing) return;
+		panelResizing = false;
+		panelManualHeight = true;
+		const el = e.currentTarget as HTMLElement;
+		if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId);
+		persistCurrentPanelState();
+	}
+
+	onMount(() => {
+		const mq = window.matchMedia('(max-width: 767px)');
+		const sync = () => {
+			narrowUi = mq.matches;
+		};
+		sync();
+		applyPanelState(appMode);
+		lastPanelMode = appMode;
+		lastHadImage = hasImage;
+		panelReady = true;
+		mq.addEventListener('change', sync);
+		const onResize = () => {
+			if (!narrowUi) return;
+			if (panelManualHeight) {
+				const next = clampPanelHeight(panelHeightPx);
+				if (next !== panelHeightPx) panelHeightPx = next;
+			} else {
+				void fitPanelToContent();
+			}
+		};
+		window.addEventListener('resize', onResize);
+		return () => {
+			mq.removeEventListener('change', sync);
+			window.removeEventListener('resize', onResize);
+		};
+	});
+
+	$effect(() => {
+		if (!panelReady) return;
+		const mode = appMode;
+		const img = hasImage;
+		const mobile = narrowUi;
+
+		const modeChanged = lastPanelMode !== null && lastPanelMode !== mode;
+		if (modeChanged) {
+			persistCurrentPanelState(lastPanelMode);
+			untrack(() => applyPanelState(mode));
+		}
+		lastPanelMode = mode;
+
+		if (mobile && img && !lastHadImage && !modeChanged) {
+			untrack(() => {
+				panelCollapsed = false;
+				panelManualHeight = false;
+				delete heightByMode[mode];
+			});
+			void (async () => {
+				await tick();
+				await nextFrame();
+				await fitPanelToContent(10, true);
+				persistCurrentPanelState(mode);
+			})();
+		}
+		lastHadImage = img;
+
+		const shouldFit = untrack(
+			() => img && mobile && !panelCollapsed && !panelManualHeight
+		);
+		if (!shouldFit) return;
+		let cancelled = false;
+		void (async () => {
+			await tick();
+			if (cancelled) return;
+			await fitPanelToContent();
+		})();
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	$effect(() => {
+		const bt = borderType;
+		if (!untrack(() => narrowUi && hasImage && !panelCollapsed)) return;
+		if (lastBorderType === null) {
+			lastBorderType = bt;
+			return;
+		}
+		if (lastBorderType === bt) return;
+		lastBorderType = bt;
+		requestAnimationFrame(() => {
+			requestAnimationFrame(() => revealPanelBottom());
+		});
+	});
 </script>
 
-<aside class="sidebar">
-	<div class="sidebar-body" class:sidebar-disabled={disabled} aria-disabled={disabled}>
+<aside
+	class="sidebar"
+	class:sidebar-collapsed={narrowUi && panelCollapsed}
+	class:sidebar-mobile-empty={narrowUi && !hasImage}
+	class:sidebar-measuring={narrowUi && panelMeasuring}
+	style={narrowUi && hasImage && !panelCollapsed && !panelMeasuring
+		? `--sidebar-mobile-h: ${panelHeightPx}px`
+		: undefined}
+>
+	{#if narrowUi && hasImage}
+		<div class="sidebar-mobile-bar" bind:this={mobileBarEl}>
+			<button
+				type="button"
+				class="sidebar-resize-handle"
+				aria-label="Resize controls panel"
+				disabled={panelCollapsed}
+				onpointerdown={onPanelResizePointerDown}
+				onpointermove={onPanelResizePointerMove}
+				onpointerup={onPanelResizePointerUp}
+				onpointercancel={onPanelResizePointerUp}
+			>
+				<span class="sidebar-resize-grip" aria-hidden="true"></span>
+			</button>
+			<button
+				type="button"
+				class="sidebar-collapse-btn"
+				aria-expanded={!panelCollapsed}
+				aria-label={panelCollapsed ? 'Expand controls' : 'Collapse controls'}
+				onclick={togglePanelCollapsed}
+			>
+				{panelCollapsed ? 'Controls' : 'Hide'}
+				<span class="sidebar-collapse-chevron" aria-hidden="true">{panelCollapsed ? '▴' : '▾'}</span>
+			</button>
+		</div>
+	{/if}
+	<div
+		class="sidebar-body-shell"
+		class:sidebar-body-collapsed={narrowUi && panelCollapsed}
+	>
+		{#if narrowUi && hasImage && !panelCollapsed}
+			<div class="sidebar-scroll-cue sidebar-scroll-cue-top" class:show={canScrollUp} aria-hidden="true">
+				▴ More
+			</div>
+		{/if}
+	<div
+		class="sidebar-body"
+		class:sidebar-disabled={disabled}
+		aria-disabled={disabled}
+		aria-hidden={narrowUi && panelCollapsed}
+		bind:this={sidebarBodyEl}
+		onscroll={updateScrollHints}
+	>
 		{#if appMode === 'crop' || appMode === 'stack'}
 			<section class="control-group">
 				<h2 class="control-label">Template</h2>
@@ -96,6 +490,9 @@
 							{t.label}
 						</button>
 					{/each}
+					<button type="button" class="sidebar-btn aspect-more-chip" onclick={onOpenAspectPopup}>
+						More…
+					</button>
 				</div>
 				<button type="button" class="sidebar-btn aspect-more-btn" onclick={onOpenAspectPopup}>
 					More ratios…
@@ -145,7 +542,7 @@
 		{:else if appMode === 'carousel'}
 			<section class="control-group">
 				<h2 class="control-label">Panel aspect</h2>
-				<div class="template-row">
+				<div class="template-row template-row-carousel">
 					{#each carouselTemplates as t}
 						<button
 							class="sidebar-btn"
@@ -156,6 +553,9 @@
 							{t.label}
 						</button>
 					{/each}
+					<button type="button" class="sidebar-btn aspect-more-chip" onclick={onOpenAspectPopup}>
+						More…
+					</button>
 				</div>
 				<button type="button" class="sidebar-btn aspect-more-btn" onclick={onOpenAspectPopup}>
 					More ratios…
@@ -336,6 +736,12 @@
 			</section>
 		{/if}
 	</div>
+		{#if narrowUi && hasImage && !panelCollapsed}
+			<div class="sidebar-scroll-cue sidebar-scroll-cue-bottom" class:show={canScrollDown} aria-hidden="true">
+				▾ More
+			</div>
+		{/if}
+	</div>
 </aside>
 
 <style>
@@ -358,6 +764,13 @@
 	.sidebar-fill-row .fill-buttons-row {
 		flex-wrap: nowrap;
 	}
+	.sidebar-body-shell {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		position: relative;
+	}
 	.sidebar-body {
 		flex: 1;
 		min-height: 0;
@@ -372,6 +785,9 @@
 		touch-action: pan-y;
 		scrollbar-width: thin;
 		scrollbar-color: var(--track-dark) transparent;
+	}
+	.sidebar-scroll-cue {
+		display: none;
 	}
 	.sidebar-body.sidebar-disabled {
 		opacity: 0.85;
@@ -544,6 +960,9 @@
 		background: rgba(59, 99, 251, 0.2);
 		color: #a5b8ff;
 	}
+	.aspect-more-chip {
+		display: none;
+	}
 	.aspect-more-btn {
 		width: 100%;
 		margin-top: 4px;
@@ -656,14 +1075,187 @@
 		.sidebar {
 			width: 100%;
 			flex: 0 0 auto;
-			max-height: clamp(180px, 32dvh, 280px);
+			height: var(--sidebar-mobile-h, 42dvh);
+			max-height: 85dvh;
 			min-height: 0;
 			border-left: none;
 			border-top: 1px solid var(--border-subtle);
 		}
+		.sidebar.sidebar-collapsed {
+			height: auto;
+			max-height: none;
+		}
+		.sidebar.sidebar-measuring {
+			height: auto;
+			max-height: 85dvh;
+		}
+		.sidebar.sidebar-measuring .sidebar-body-shell {
+			flex: 0 0 auto;
+		}
+		.sidebar.sidebar-measuring .sidebar-body {
+			flex: 0 0 auto;
+			height: auto;
+			overflow: visible;
+		}
+		.sidebar.sidebar-mobile-empty {
+			display: none;
+		}
+		.sidebar-body-shell.sidebar-body-collapsed {
+			display: none;
+		}
+		.sidebar-scroll-cue {
+			position: absolute;
+			left: 0;
+			right: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			height: 24px;
+			opacity: 0;
+			pointer-events: none;
+			font-size: 11px;
+			font-weight: 600;
+			letter-spacing: 0.04em;
+			text-transform: uppercase;
+			color: var(--text-secondary);
+			transition: opacity 0.15s;
+			z-index: 2;
+		}
+		.sidebar-scroll-cue.show {
+			opacity: 1;
+		}
+		.sidebar-scroll-cue-top {
+			top: 0;
+			background: linear-gradient(to bottom, var(--bg-panel) 55%, transparent);
+		}
+		.sidebar-scroll-cue-bottom {
+			bottom: 0;
+			background: linear-gradient(to top, var(--bg-panel) 55%, transparent);
+		}
+		.sidebar-mobile-bar {
+			flex-shrink: 0;
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			padding: 2px 8px 0;
+			border-bottom: 1px solid var(--border-subtle);
+			background: var(--bg-panel);
+		}
+		.sidebar-resize-handle {
+			flex: 1;
+			min-height: 28px;
+			margin: 0;
+			padding: 0;
+			border: none;
+			background: transparent;
+			cursor: ns-resize;
+			touch-action: none;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+		.sidebar-resize-handle:disabled {
+			cursor: default;
+			opacity: 0.35;
+		}
+		.sidebar-resize-grip {
+			width: 36px;
+			height: 4px;
+			border-radius: 2px;
+			background: rgba(255, 255, 255, 0.22);
+		}
+		.sidebar-collapse-btn {
+			flex-shrink: 0;
+			display: inline-flex;
+			align-items: center;
+			gap: 4px;
+			min-height: 32px;
+			padding: 4px 10px;
+			border: none;
+			border-radius: var(--radius);
+			background: transparent;
+			color: var(--text-secondary);
+			font-size: 12px;
+			font-weight: 500;
+			cursor: pointer;
+		}
+		.sidebar-collapse-btn:hover {
+			background: rgba(255, 255, 255, 0.06);
+			color: var(--text-primary);
+		}
+		.sidebar-collapse-chevron {
+			font-size: 11px;
+			opacity: 0.8;
+		}
 		.sidebar-body {
-			padding: 14px;
-			gap: 14px;
+			padding: 8px 12px 10px;
+			gap: 8px;
+		}
+		.control-group {
+			gap: 6px;
+		}
+		.control-label {
+			font-size: 11px;
+			letter-spacing: 0.04em;
+		}
+		.template-row {
+			display: grid;
+			grid-template-columns: repeat(5, minmax(0, 1fr));
+			gap: 6px;
+			overflow: visible;
+		}
+		.template-row-carousel {
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+		}
+		.border-type-row {
+			gap: 6px;
+			flex-wrap: nowrap;
+		}
+		.sidebar-btn {
+			min-height: 32px;
+			min-width: 0;
+			padding: 5px 4px;
+			font-size: 11px;
+			flex: 1 1 0;
+		}
+		.template-row .sidebar-btn {
+			width: 100%;
+			padding: 5px 2px;
+		}
+		.aspect-more-chip {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+		}
+		.aspect-more-btn {
+			display: none;
+		}
+		.sidebar-fill-row {
+			flex-direction: row;
+			align-items: center;
+			justify-content: space-between;
+			gap: 10px;
+		}
+		.sidebar-fill-row .control-label {
+			margin: 0;
+			flex-shrink: 0;
+		}
+		.sidebar-fill-row .fill-buttons-row {
+			flex: 1;
+			min-width: 0;
+		}
+		.sidebar-fill-row .sidebar-btn {
+			flex: 1;
+		}
+		.slider-label {
+			font-size: 11px;
+		}
+		.color-picker {
+			width: 34px;
+			height: 34px;
+		}
+		.color-hex {
+			min-height: 34px;
 		}
 	}
 </style>

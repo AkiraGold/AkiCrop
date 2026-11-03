@@ -18,13 +18,15 @@
 			href="https://virtualc.xyz"
 			target="_blank"
 			rel="noopener noreferrer"
+			title="Projects"
+			aria-label="Projects"
 		>
 			<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 				<path d="M15 3h6v6" />
 				<path d="M10 14 21 3" />
 				<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
 			</svg>
-			Projects
+			<span class="topbar-projects-label">Projects</span>
 		</a>
 	</div>
 	<div class="topbar-mode" role="group" aria-label="Mode">
@@ -33,7 +35,7 @@
 		<a href="?mode=stack" class="topbar-mode-btn" class:selected={appMode === 'stack'} title="Stack">Stack</a>
 	</div>
 	<button
-		class="btn btn-primary"
+		class="btn btn-primary topbar-export"
 		disabled={!canExport || exportLoading}
 		onclick={onExport}
 		title={appMode === 'stack' ? 'Export stack' : appMode === 'carousel' ? 'Export carousel' : 'Export (Ctrl+S)'}
@@ -111,5 +113,40 @@
 	.topbar-mode-btn.selected {
 		background: var(--adobe-blue);
 		color: white;
+	}
+	@media (max-width: 767px) {
+		.topbar {
+			height: auto;
+			min-height: var(--topbar-height);
+			flex-wrap: wrap;
+			padding: 8px 10px;
+			gap: 8px;
+			row-gap: 8px;
+		}
+		.topbar-brand {
+			gap: 4px;
+			order: 1;
+		}
+		.topbar-projects {
+			padding: 6px 8px;
+			min-height: 36px;
+		}
+		.topbar-export {
+			order: 2;
+			margin-left: auto;
+			min-height: 36px;
+			padding: 8px 12px;
+		}
+		.topbar-mode {
+			order: 3;
+			flex: 1 1 100%;
+			width: 100%;
+		}
+		.topbar-mode-btn {
+			flex: 1;
+			text-align: center;
+			padding: 8px 6px;
+			min-height: 36px;
+		}
 	}
 </style>

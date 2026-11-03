@@ -21,9 +21,10 @@
 	const SWIPE_ANIM_MS = 280;
 	const WHEEL_NAV_THRESHOLD = 100;
 	const WHEEL_NAV_COOLDOWN_MS = 380;
-	const LIST_SINGLE_COL_MQ = '(max-width: 767px)';
+	const LIST_NARROW_MQ = '(max-width: 767px)';
 	const LIST_COLUMNS_MIN = 1;
 	const LIST_COLUMNS_MAX = 4;
+	const LIST_COLUMNS_PHONE_MAX = 2;
 	const LIST_GRID_GAP = 12;
 	const LIST_GRID_PAD = 32;
 	const LIST_NEXT_ROW_PEEK = 1 / 3;
@@ -93,8 +94,8 @@
 	let stackPinchStartPanY = 0;
 	let wheelNavAccum = 0;
 	let wheelNavCooldownUntil = 0;
-	let browseForcedSingleCol = $state(
-		typeof window !== 'undefined' ? window.matchMedia(LIST_SINGLE_COL_MQ).matches : false
+	let narrowListUi = $state(
+		typeof window !== 'undefined' ? window.matchMedia(LIST_NARROW_MQ).matches : false
 	);
 	let touchUi = $state(
 		typeof window !== 'undefined'
@@ -109,9 +110,10 @@
 		stackImages.length > 0 ? stackImages[stackStoryIndex] ?? stackImages[0] : null
 	);
 
-	const effectiveListColumns = $derived(browseForcedSingleCol ? 1 : listColumns);
-	const browseViewLabel = $derived(effectiveListColumns > 1 ? 'Grid' : 'List');
-
+	const listColumnsCap = $derived(narrowListUi ? LIST_COLUMNS_PHONE_MAX : LIST_COLUMNS_MAX);
+	const effectiveListColumns = $derived(
+		Math.max(LIST_COLUMNS_MIN, Math.min(listColumnsCap, listColumns))
+	);
 	function listFrameRatio(): number {
 		if (templateRatio > 0) return templateRatio;
 		const first = stackImages[0]?.preview;
@@ -143,19 +145,29 @@
 
 	function listColumnsIn() {
 		listColumnsManual = true;
-		listColumns = Math.min(LIST_COLUMNS_MAX, listColumns + 1);
+		listColumns = Math.min(listColumnsCap, listColumns + 1);
 	}
 	function listColumnsOut() {
 		listColumnsManual = true;
 		listColumns = Math.max(LIST_COLUMNS_MIN, listColumns - 1);
 	}
 
+	function setStackBrowseMode(mode: 'list' | 'grid' | 'story') {
+		if (mode === 'story') {
+			stackViewMode = 'story';
+			return;
+		}
+		stackViewMode = 'list';
+		listColumnsManual = true;
+		listColumns = mode === 'grid' ? LIST_COLUMNS_PHONE_MAX : 1;
+	}
+
 	$effect(() => {
 		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia(LIST_SINGLE_COL_MQ);
+		const mq = window.matchMedia(LIST_NARROW_MQ);
 		const touchMq = window.matchMedia('(hover: none), (pointer: coarse)');
 		const sync = () => {
-			browseForcedSingleCol = mq.matches;
+			narrowListUi = mq.matches;
 		};
 		const syncTouch = () => {
 			touchUi = touchMq.matches;
@@ -171,7 +183,13 @@
 	});
 
 	$effect(() => {
-		if (browseForcedSingleCol) return;
+		if (!narrowListUi) return;
+		if (!listColumnsManual) listColumns = 1;
+		else if (listColumns > LIST_COLUMNS_PHONE_MAX) listColumns = LIST_COLUMNS_PHONE_MAX;
+	});
+
+	$effect(() => {
+		if (narrowListUi) return;
 		const r = listFrameRatio();
 		const w = containerSize.width;
 		const h = containerSize.height;
@@ -973,8 +991,44 @@
 {#if stackImages.length}
 	<footer class="zoom-bar">
 		<div class="zoom-group">
-			<button type="button" class="zoom-btn" class:selected={stackViewMode === 'list'} onclick={() => (stackViewMode = 'list')} title={`${browseViewLabel} view`}>{browseViewLabel}</button>
-			<button type="button" class="zoom-btn" class:selected={stackViewMode === 'story'} onclick={() => (stackViewMode = 'story')} title="One at a time (drag to switch)">Swipe</button>
+			{#if narrowListUi}
+				<button
+					type="button"
+					class="zoom-btn"
+					class:selected={stackViewMode === 'list' && effectiveListColumns <= 1}
+					onclick={() => setStackBrowseMode('list')}
+					title="Single-column list"
+				>List</button>
+				<button
+					type="button"
+					class="zoom-btn"
+					class:selected={stackViewMode === 'list' && effectiveListColumns > 1}
+					onclick={() => setStackBrowseMode('grid')}
+					title="Two-column grid"
+				>Grid</button>
+				<button
+					type="button"
+					class="zoom-btn"
+					class:selected={stackViewMode === 'story'}
+					onclick={() => setStackBrowseMode('story')}
+					title="One at a time (drag to switch)"
+				>Swipe</button>
+			{:else}
+				<button
+					type="button"
+					class="zoom-btn"
+					class:selected={stackViewMode === 'list'}
+					onclick={() => (stackViewMode = 'list')}
+					title="List view"
+				>List</button>
+				<button
+					type="button"
+					class="zoom-btn"
+					class:selected={stackViewMode === 'story'}
+					onclick={() => (stackViewMode = 'story')}
+					title="One at a time (drag to switch)"
+				>Swipe</button>
+			{/if}
 			<div class="zoom-subgroup">
 				<label class="zoom-btn">
 					<input type="file" accept="image/*" multiple onchange={onStackFiles} />
@@ -983,11 +1037,11 @@
 				<button type="button" class="zoom-btn" onclick={clearStack}>Clear</button>
 			</div>
 		</div>
-		{#if stackViewMode === 'list' && !browseForcedSingleCol}
+		{#if stackViewMode === 'list' && !narrowListUi}
 			<div class="zoom-group zoom-group-zoom">
-				<span class="zoom-pct" title="Columns">{listColumns} col</span>
-				<button type="button" class="zoom-btn" onclick={listColumnsOut} disabled={listColumns <= LIST_COLUMNS_MIN} title="Fewer columns">−</button>
-				<button type="button" class="zoom-btn" onclick={listColumnsIn} disabled={listColumns >= LIST_COLUMNS_MAX} title="More columns">+</button>
+				<span class="zoom-pct" title="Columns">{effectiveListColumns} col</span>
+				<button type="button" class="zoom-btn" onclick={listColumnsOut} disabled={effectiveListColumns <= LIST_COLUMNS_MIN} title="Fewer columns">−</button>
+				<button type="button" class="zoom-btn" onclick={listColumnsIn} disabled={effectiveListColumns >= listColumnsCap} title="More columns">+</button>
 			</div>
 		{:else if stackViewMode === 'story'}
 			{#if touchUi}
@@ -1407,9 +1461,47 @@
 	}
 	@media (max-width: 767px) {
 		.zoom-bar {
-			height: 36px;
-			gap: 6px;
-			padding: 0 6px;
+			height: auto;
+			min-height: 36px;
+			flex-wrap: wrap;
+			align-content: center;
+			justify-content: space-between;
+			row-gap: 4px;
+			column-gap: 4px;
+			padding: 4px 6px;
+			overflow: hidden;
+		}
+		.zoom-bar > .zoom-group:first-child {
+			flex: 1 1 100%;
+			min-width: 0;
+		}
+		.zoom-group {
+			gap: 4px;
+			flex-shrink: 1;
+			min-width: 0;
+		}
+		.zoom-subgroup {
+			margin-left: auto;
+			padding-left: 0;
+			border-left: none;
+			gap: 4px;
+		}
+		.zoom-group-gesture,
+		.zoom-group-zoom {
+			margin-left: 0;
+		}
+		.zoom-group-zoom {
+			margin-left: auto;
+		}
+		.zoom-pct {
+			min-width: 2.75em;
+			font-size: 11px;
+		}
+		.zoom-bar .zoom-btn {
+			min-width: 0;
+			min-height: 28px;
+			padding: 0 8px;
+			font-size: 12px;
 		}
 		.stack-list-wrap {
 			padding: 10px;
@@ -1426,10 +1518,6 @@
 		.stack-cell-swipe {
 			opacity: 1;
 			pointer-events: auto;
-		}
-		.zoom-bar .zoom-btn {
-			min-width: 0;
-			padding: 0 10px;
 		}
 	}
 

@@ -81,5 +81,6 @@ html, body {
 @media (max-width: 767px) {
 	:root {
 		--zoombar-height: 34px;
+		--topbar-height: 44px;
 	}
 }

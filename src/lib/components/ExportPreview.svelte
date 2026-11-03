@@ -10,7 +10,7 @@
 	}
 	interface Props {
 		open: boolean;
-		kind: 'carousel' | 'stack' | null;
+		kind: 'carousel' | 'stack' | 'crop' | null;
 		panels: Panel[];
 		canUseShare: boolean;
 		exportFormat: 'image/png' | 'image/jpeg';
@@ -183,51 +183,59 @@
 						<div class="export-preview-spinner"></div>
 					</div>
 				{/if}
-				<div class="export-preview-strip">
-				{#each panels as panel, i}
-					<div class="export-preview-panel">
-						<img src={panel.url} alt="Panel {i + 1}" />
-						{#if canUseShare}
-							<button
-								type="button"
-								class="btn btn-primary export-preview-panel-share"
-								onclick={() => onSharePanel(panel, i)}
-								title="Share this panel"
-							>
-								Share
-							</button>
-						{:else}
-							<button
-								type="button"
-								class="btn btn-secondary export-preview-panel-dl"
-								onclick={() => onDownloadPanel(panel, i)}
-							>
-								Download
-							</button>
-						{/if}
-					</div>
-				{/each}
+				<div class="export-preview-strip" class:single={panels.length === 1}>
+					{#each panels as panel, i}
+						<div class="export-preview-panel">
+							<div class="export-preview-thumb">
+								<img src={panel.url} alt="Panel {i + 1}" />
+								<span class="export-preview-index" aria-hidden="true">{i + 1}</span>
+								{#if canUseShare}
+									<button
+										type="button"
+										class="export-preview-panel-btn"
+										onclick={() => onSharePanel(panel, i)}
+										disabled={regenerating}
+										title="Share this panel"
+									>
+										Share
+									</button>
+								{:else}
+									<button
+										type="button"
+										class="export-preview-panel-btn"
+										onclick={() => onDownloadPanel(panel, i)}
+										disabled={regenerating}
+										title="Download this panel"
+									>
+										Download
+									</button>
+								{/if}
+							</div>
+						</div>
+					{/each}
 				</div>
 			</div>
 			<div class="export-preview-actions">
-				<button
-					type="button"
-					class="btn btn-primary"
-					onclick={onShareAll}
-					title="Share all exported panels"
-				>
-					Share all
-				</button>
-				{#if !canUseShare}
+				{#if canUseShare}
 					<button
 						type="button"
 						class="btn btn-primary"
-						onclick={onDownloadAll}
-						title="Download all exported panels"
+						onclick={onShareAll}
+						disabled={regenerating}
+						title={panels.length === 1 ? 'Share exported image' : 'Share all exported panels'}
 					>
-						Download all
+						{panels.length === 1 ? 'Share' : 'Share all'}
 					</button>
 				{/if}
+				<button
+					type="button"
+					class="btn {canUseShare ? 'btn-secondary' : 'btn-primary'}"
+					onclick={onDownloadAll}
+					disabled={regenerating}
+					title={panels.length === 1 ? 'Download exported image' : 'Download all exported panels'}
+				>
+					{panels.length === 1 ? 'Download' : 'Download all'}
+				</button>
 				<button type="button" class="btn btn-secondary" onclick={onClose}>Close</button>
 			</div>
 		</div>
@@ -251,7 +259,7 @@
 		background: var(--bg-panel);
 		border-radius: var(--radius);
 		border: 1px solid var(--border-subtle);
-		max-width: 100%;
+		width: min(480px, 100%);
 		max-height: calc(100vh - 48px);
 		display: flex;
 		flex-direction: column;
@@ -483,42 +491,112 @@
 		}
 	}
 	.export-preview-strip {
-		display: flex;
-		flex-direction: row;
-		flex-wrap: nowrap;
-		gap: 12px;
-		padding: 24px;
-		overflow-x: auto;
-		overflow-y: hidden;
-		justify-content: center;
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+		gap: 8px;
+		padding: 14px 16px;
+		overflow-x: hidden;
+		overflow-y: auto;
+		align-content: start;
 		min-height: 0;
 		flex: 1;
+		background: rgba(0, 0, 0, 0.18);
+	}
+	.export-preview-strip.single {
+		grid-template-columns: minmax(0, 280px);
+		justify-content: center;
 	}
 	.export-preview-panel {
-		flex-shrink: 0;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 10px;
+		min-width: 0;
+		line-height: 0;
 	}
-	.export-preview-panel img {
+	.export-preview-thumb {
+		position: relative;
 		display: block;
-		vertical-align: bottom;
-		max-height: 50vh;
-		width: auto;
-		height: auto;
+		width: 100%;
+		line-height: 0;
 		border-radius: var(--radius);
 		overflow: hidden;
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+		box-shadow:
+			0 0 0 1px rgba(255, 255, 255, 0.08),
+			0 2px 8px rgba(0, 0, 0, 0.4);
+		transition: box-shadow 0.15s, transform 0.15s;
 	}
-	.export-preview-panel-dl,
-	.export-preview-panel-share {
+	.export-preview-panel:hover .export-preview-thumb,
+	.export-preview-panel:focus-within .export-preview-thumb {
+		box-shadow:
+			0 0 0 1px rgba(255, 255, 255, 0.16),
+			0 4px 14px rgba(0, 0, 0, 0.5);
+		transform: translateY(-1px);
+	}
+	.export-preview-thumb img {
+		display: block;
 		width: 100%;
+		height: auto;
+		vertical-align: bottom;
+		background: transparent;
+	}
+	.export-preview-index {
+		position: absolute;
+		top: 5px;
+		left: 5px;
+		min-width: 17px;
+		height: 17px;
+		padding: 0 5px;
+		border-radius: 4px;
+		background: rgba(0, 0, 0, 0.55);
+		backdrop-filter: blur(6px);
+		-webkit-backdrop-filter: blur(6px);
+		color: #fff;
+		font-size: 10px;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+		line-height: 17px;
+		text-align: center;
+		pointer-events: none;
+		z-index: 1;
+	}
+	.export-preview-panel-btn {
+		position: absolute;
+		left: 50%;
+		bottom: 5px;
+		transform: translateX(-50%);
+		z-index: 1;
+		min-height: 22px;
+		padding: 2px 10px;
+		border: none;
+		border-radius: 4px;
+		background: rgba(18, 18, 18, 0.82);
+		backdrop-filter: blur(6px);
+		-webkit-backdrop-filter: blur(6px);
+		color: #fff;
+		font-size: 11px;
+		font-weight: 500;
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 0.12s, background 0.12s;
+		white-space: nowrap;
+	}
+	.export-preview-panel:hover .export-preview-panel-btn,
+	.export-preview-panel:focus-within .export-preview-panel-btn {
+		opacity: 1;
+	}
+	.export-preview-panel-btn:hover:not(:disabled) {
+		background: rgba(59, 99, 251, 0.92);
+	}
+	.export-preview-panel-btn:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	@media (hover: none) {
+		.export-preview-panel-btn:not(:disabled) {
+			opacity: 1;
+		}
 	}
 	.export-preview-actions {
 		display: flex;
 		gap: 12px;
-		padding: 16px 24px;
+		padding: 12px 16px;
 		border-top: 1px solid var(--border-subtle);
 		flex-shrink: 0;
 	}
@@ -527,6 +605,7 @@
 			padding: 12px;
 		}
 		.export-preview-box {
+			width: 100%;
 			max-height: calc(100dvh - 24px);
 		}
 		.export-preview-options {
@@ -534,14 +613,12 @@
 			gap: 8px;
 		}
 		.export-preview-strip {
+			grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
 			padding: 10px 12px;
-			gap: 8px;
-		}
-		.export-preview-panel {
 			gap: 6px;
 		}
-		.export-preview-panel img {
-			max-height: 34dvh;
+		.export-preview-strip.single {
+			grid-template-columns: minmax(0, 220px);
 		}
 		.export-preview-actions {
 			padding: 10px 12px;

@@ -43,11 +43,12 @@
 	let blurStrength = $state(25);
 	let solidColor = $state('#3b63fb');
 	let loading = $state(false);
+	let importProgress = $state<{ current: number; total: number } | null>(null);
 	let exportLoading = $state(false);
 
 	let exportPreviewOpen = $state(false);
 	let exportPreviewPanels = $state<{ url: string; blob: Blob }[]>([]);
-	let exportPreviewKind = $state<'carousel' | 'stack' | null>(null);
+	let exportPreviewKind = $state<'carousel' | 'stack' | 'crop' | null>(null);
 	let exportPreviewFormat = $state<'image/png' | 'image/jpeg'>('image/png');
 	let exportPreviewRegenerating = $state(false);
 	let exportRegenerationVersion = $state(0);
@@ -68,9 +69,35 @@
 	const exportFileExt = $derived(exportFormat === 'image/jpeg' ? 'jpg' : 'png');
 	const exportMimeType = $derived(exportFormat);
 
-	const canUseShare = $derived(
-		typeof navigator !== 'undefined' && typeof navigator.share === 'function'
-	);
+	/** Set on the client — SSR has no navigator.share, and a $derived would stick at false. */
+	let canUseShare = $state(false);
+
+	const SHARE_PROBE_PNG = Uint8Array.from([
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+		0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe, 0xd4, 0xef, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+		0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+	]);
+
+	function detectCanShareFiles(): boolean {
+		if (typeof window === 'undefined' || !window.isSecureContext) return false;
+		if (typeof navigator.share !== 'function') return false;
+		const probe = new File([SHARE_PROBE_PNG], 'akicrop.png', { type: 'image/png' });
+		if (typeof navigator.canShare === 'function') {
+			try {
+				return navigator.canShare({ files: [probe] });
+			} catch {
+				return false;
+			}
+		}
+		// Older iOS Safari: share() exists, canShare() does not — file share still works.
+		return /iPad|iPhone|iPod/.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
+	}
+
+	$effect(() => {
+		canUseShare = detectCanShareFiles();
+	});
 
 	const sidebarHasImage = $derived.by(() => {
 		if (appMode === 'crop') return !!previewImage;
@@ -218,13 +245,27 @@
 		return () => ro.disconnect();
 	});
 
+	async function decodeImageFile(file: File): Promise<{ blob: Blob; bitmap: ImageBitmap } | null> {
+		if (!file.type.startsWith('image/')) return null;
+		const blob = await file.arrayBuffer().then((b) => new Blob([b], { type: file.type }));
+		const bitmap = await createImageBitmap(blob);
+		return { blob, bitmap };
+	}
+
 	async function handleFile(file: File) {
 		if (!file.type.startsWith('image/')) return;
+		if (appMode === 'stack') {
+			await importStackFiles([file]);
+			return;
+		}
 		loading = true;
+		importProgress = { current: 0, total: 1 };
 		if (appMode === 'carousel') carouselError = null;
 		try {
-			const blob = await file.arrayBuffer().then((b) => new Blob([b], { type: file.type }));
-			const bitmap = await createImageBitmap(blob);
+			const decoded = await decodeImageFile(file);
+			if (!decoded) return;
+			const { blob, bitmap } = decoded;
+			importProgress = { current: 1, total: 1 };
 			if (appMode === 'crop') {
 				originalBlob = blob;
 				originalWidth = bitmap.width;
@@ -232,11 +273,6 @@
 				previewImage = await downscaleForPreview(bitmap);
 				if (bitmap !== previewImage) bitmap.close();
 				aspectRatioPopupOpen = true;
-			} else if (appMode === 'stack') {
-				const preview = await downscaleForPreview(bitmap);
-				if (bitmap !== preview) bitmap.close();
-				stackImages = [...stackImages, { blob, preview }];
-				if (stackImages.length === 1) aspectRatioPopupOpen = true;
 			} else {
 				carouselOriginalBlob = blob;
 				carouselOriginalWidth = bitmap.width;
@@ -253,17 +289,46 @@
 			}
 		} finally {
 			loading = false;
+			importProgress = null;
+		}
+	}
+
+	async function importStackFiles(files: File[]) {
+		const images = files.filter((f) => f.type.startsWith('image/'));
+		if (!images.length) return;
+		loading = true;
+		importProgress = { current: 0, total: images.length };
+		const startingEmpty = stackImages.length === 0;
+		try {
+			for (let i = 0; i < images.length; i++) {
+				try {
+					const decoded = await decodeImageFile(images[i]);
+					if (!decoded) {
+						importProgress = { current: i + 1, total: images.length };
+						continue;
+					}
+					const { blob, bitmap } = decoded;
+					const preview = await downscaleForPreview(bitmap);
+					if (bitmap !== preview) bitmap.close();
+					stackImages = [...stackImages, { blob, preview }];
+				} catch (err) {
+					console.error('Failed to import image:', err);
+				}
+				importProgress = { current: i + 1, total: images.length };
+			}
+			if (startingEmpty && stackImages.length > 0) aspectRatioPopupOpen = true;
+		} finally {
+			loading = false;
+			importProgress = null;
 		}
 	}
 
 	function handleStackFiles(e: Event) {
 		const input = e.target as HTMLInputElement;
-		const files = input.files;
-		if (!files?.length) return;
-		for (let i = 0; i < files.length; i++) {
-			handleFile(files[i]);
-		}
+		const files = input.files ? Array.from(input.files) : [];
 		input.value = '';
+		if (!files.length) return;
+		void importStackFiles(files);
 	}
 
 	function removeStackImage(index: number) {
@@ -323,8 +388,13 @@
 
 	function onDrop(e: DragEvent) {
 		e.preventDefault();
-		const file = e.dataTransfer?.files?.[0];
-		if (file) handleFile(file);
+		const list = e.dataTransfer?.files;
+		if (!list?.length) return;
+		if (appMode === 'stack') {
+			void importStackFiles(Array.from(list));
+			return;
+		}
+		void handleFile(list[0]);
 	}
 
 	function onDragOver(e: DragEvent) {
@@ -415,14 +485,52 @@
 		return panels;
 	}
 
+	async function generateCropPanels(): Promise<{ url: string; blob: Blob }[]> {
+		if (!originalBlob || !previewImage) return [];
+		const bitmap = await createImageBitmap(originalBlob);
+		const ratio = cropTemplateRatio > 0 ? cropTemplateRatio : bitmap.width / bitmap.height;
+		const dims = getCanvasDimensions(
+			bitmap.width,
+			bitmap.height,
+			ratio,
+			exportMaxSize ?? undefined
+		);
+		const scale = dims.width / previewDims.width;
+		const exportPadding = Math.round(padding * scale);
+		const exportCanvas = document.createElement('canvas');
+		exportCanvas.width = dims.width;
+		exportCanvas.height = dims.height;
+		renderCanvas(exportCanvas, {
+			image: bitmap,
+			templateRatio: ratio,
+			padding: exportPadding,
+			borderType,
+			blurStrength,
+			solidColor,
+			width: dims.width,
+			height: dims.height
+		});
+		bitmap.close();
+		const mime = exportFormat === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+		const quality = exportFormat === 'image/jpeg' ? exportQuality : 1;
+		const blob = await new Promise<Blob | null>((res) => exportCanvas.toBlob(res, mime, quality));
+		if (!blob) return [];
+		return [{ url: URL.createObjectURL(blob), blob }];
+	}
+
 	async function regenerateExportPanels() {
-		if (exportPreviewKind !== 'stack' && exportPreviewKind !== 'carousel') return;
+		if (exportPreviewKind !== 'stack' && exportPreviewKind !== 'carousel' && exportPreviewKind !== 'crop')
+			return;
 		exportPreviewPanels.forEach((p) => URL.revokeObjectURL(p.url));
 		exportPreviewRegenerating = true;
 		const version = ++exportRegenerationVersion;
 		try {
 			const panels =
-				exportPreviewKind === 'stack' ? await generateStackPanels() : await generateCarouselPanels();
+				exportPreviewKind === 'stack'
+					? await generateStackPanels()
+					: exportPreviewKind === 'carousel'
+						? await generateCarouselPanels()
+						: await generateCropPanels();
 			if (version !== exportRegenerationVersion) {
 				panels.forEach((p) => URL.revokeObjectURL(p.url));
 				return;
@@ -470,57 +578,15 @@
 		if (!originalBlob || !previewImage) return;
 		exportLoading = true;
 		try {
-			const bitmap = await createImageBitmap(originalBlob);
-			const ratio = cropTemplateRatio > 0 ? cropTemplateRatio : bitmap.width / bitmap.height;
-			const dims = getCanvasDimensions(
-				bitmap.width,
-				bitmap.height,
-				ratio,
-				exportMaxSize ?? undefined
-			);
-			const scale = dims.width / previewDims.width;
-			const exportPadding = Math.round(padding * scale);
-			const exportCanvas = document.createElement('canvas');
-			exportCanvas.width = dims.width;
-			exportCanvas.height = dims.height;
-			renderCanvas(exportCanvas, {
-				image: bitmap,
-				templateRatio: ratio,
-				padding: exportPadding,
-				borderType,
-				blurStrength,
-				solidColor,
-				width: dims.width,
-				height: dims.height
-			});
-			bitmap.close();
-			exportCanvas.toBlob(
-				(blob) => {
-					if (!blob) {
-						exportLoading = false;
-						return;
-					}
-					const filename = `akicrop-${Date.now()}.${exportFileExt}`;
-					const file = new File([blob], filename, { type: exportMimeType });
-					if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare?.({ files: [file] })) {
-						navigator.share({ files: [file], title: 'AkiCrop', text: 'Exported image' })
-							.then(() => { exportLoading = false; })
-							.catch(() => {
-								triggerDownloadFallback(blob, filename);
-								exportLoading = false;
-							});
-						return;
-					}
-					triggerDownloadFallback(blob, filename);
-					exportLoading = false;
-				},
-				exportMimeType,
-				exportFormat === 'image/jpeg' ? exportQuality : 1
-			);
+			const panels = await generateCropPanels();
+			exportPreviewKind = 'crop';
+			exportPreviewPanels = panels;
+			exportPreviewFormat = exportFormat;
+			exportPreviewOpen = true;
 		} catch (e) {
-			exportLoading = false;
-			console.error('Export failed:', e);
+			console.error('Crop export failed:', e);
 		}
+		exportLoading = false;
 	}
 
 	function closeExportPreview() {
@@ -530,27 +596,53 @@
 		exportPreviewKind = null;
 	}
 
+	function exportFilenamePrefix() {
+		if (exportPreviewKind === 'stack') return 'akicrop-stack';
+		if (exportPreviewKind === 'carousel') return 'akicrop-panel';
+		return 'akicrop';
+	}
+
+	function canShareFileList(files: File[]): boolean {
+		if (typeof window === 'undefined' || !window.isSecureContext) return false;
+		if (typeof navigator.share !== 'function') return false;
+		if (typeof navigator.canShare === 'function') {
+			try {
+				return navigator.canShare({ files });
+			} catch {
+				return false;
+			}
+		}
+		return canUseShare;
+	}
+
 	function downloadExportPreviewPanels() {
-		const prefix = exportPreviewKind === 'stack' ? 'akicrop-stack' : 'akicrop-panel';
+		const prefix = exportFilenamePrefix();
 		const ext = exportPreviewFormat === 'image/jpeg' ? 'jpg' : 'png';
 		const delay = 300;
 		exportPreviewPanels.forEach((p, i) => {
-			setTimeout(() => triggerDownloadFallback(p.blob, `${prefix}-${i + 1}.${ext}`), i * delay);
+			const name =
+				exportPreviewPanels.length === 1 ? `${prefix}.${ext}` : `${prefix}-${i + 1}.${ext}`;
+			setTimeout(() => triggerDownloadFallback(p.blob, name), i * delay);
 		});
 	}
 
 	async function shareExportPreviewPanels() {
-		const prefix = exportPreviewKind === 'stack' ? 'akicrop-stack' : 'akicrop-panel';
+		const prefix = exportFilenamePrefix();
 		const ext = exportPreviewFormat === 'image/jpeg' ? 'jpg' : 'png';
 		const mime = exportPreviewFormat;
 		const files = exportPreviewPanels.map(
-			(p, i) => new File([p.blob], `${prefix}-${i + 1}.${ext}`, { type: mime })
+			(p, i) =>
+				new File(
+					[p.blob],
+					exportPreviewPanels.length === 1 ? `${prefix}.${ext}` : `${prefix}-${i + 1}.${ext}`,
+					{ type: mime }
+				)
 		);
 		try {
-			if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') {
+			if (!canShareFileList(files)) {
 				throw new Error('Share is not supported in this browser.');
 			}
-			await navigator.share({ files });
+			await navigator.share({ files, title: 'AkiCrop', text: 'Exported image' });
 		} catch (e) {
 			const err = e as Error;
 			if (err.name === 'AbortError') return;
@@ -560,10 +652,15 @@
 
 	async function shareExportPreviewPanel(panel: { url: string; blob: Blob }, index: number) {
 		try {
-			if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') return;
 			const ext = exportPreviewFormat === 'image/jpeg' ? 'jpg' : 'png';
-			const file = new File([panel.blob], `akicrop-panel-${index + 1}.${ext}`, { type: exportPreviewFormat });
-			await navigator.share({ files: [file] });
+			const prefix = exportFilenamePrefix();
+			const file = new File(
+				[panel.blob],
+				exportPreviewPanels.length === 1 ? `${prefix}.${ext}` : `${prefix}-${index + 1}.${ext}`,
+				{ type: exportPreviewFormat }
+			);
+			if (!canShareFileList([file])) return;
+			await navigator.share({ files: [file], title: 'AkiCrop', text: 'Exported image' });
 		} catch (e) {
 			if ((e as Error).name !== 'AbortError') alert('Share failed: ' + ((e as Error).message || String(e)));
 		}
@@ -863,8 +960,24 @@
 			{/if}
 
 			{#if loading || exportLoading}
-				<div class="spinner-overlay" aria-hidden="true">
-					<div class="spinner"></div>
+				<div
+					class="spinner-overlay"
+					role="status"
+					aria-live="polite"
+					aria-label={exportLoading ? 'Exporting' : 'Importing images'}
+				>
+					<div class="spinner" aria-hidden="true"></div>
+					{#if loading && importProgress}
+						<p class="spinner-label">
+							{#if importProgress.total > 1}
+								Importing {importProgress.current} / {importProgress.total}
+							{:else}
+								Importing…
+							{/if}
+						</p>
+					{:else if exportLoading}
+						<p class="spinner-label">Exporting…</p>
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -920,9 +1033,11 @@
 		onDownloadAll={downloadExportPreviewPanels}
 		onSharePanel={shareExportPreviewPanel}
 		onDownloadPanel={(panel, i) => {
-			const prefix = exportPreviewKind === 'stack' ? 'akicrop-stack' : 'akicrop-panel';
+			const prefix = exportFilenamePrefix();
 			const ext = exportPreviewFormat === 'image/jpeg' ? 'jpg' : 'png';
-			triggerDownloadFallback(panel.blob, `${prefix}-${i + 1}.${ext}`);
+			const name =
+				exportPreviewPanels.length === 1 ? `${prefix}.${ext}` : `${prefix}-${i + 1}.${ext}`;
+			triggerDownloadFallback(panel.blob, name);
 		}}
 	/>
 
@@ -988,11 +1103,13 @@
 	.spinner-overlay {
 		position: absolute;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
+		background: rgba(0, 0, 0, 0.55);
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		z-index: 10;
+		gap: 12px;
+		z-index: 20;
 	}
 
 	.spinner {
@@ -1002,6 +1119,14 @@
 		border-top-color: var(--adobe-blue);
 		border-radius: 50%;
 		animation: spin 0.8s linear infinite;
+	}
+
+	.spinner-label {
+		margin: 0;
+		font-size: var(--font-size-label);
+		font-weight: 500;
+		color: var(--text-primary);
+		font-variant-numeric: tabular-nums;
 	}
 
 	@keyframes spin {

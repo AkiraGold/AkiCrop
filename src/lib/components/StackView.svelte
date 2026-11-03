@@ -27,6 +27,8 @@
 	const LIST_GRID_GAP = 12;
 	const LIST_GRID_PAD = 32;
 	const LIST_NEXT_ROW_PEEK = 1 / 3;
+	/** Comfortable card width for auto column count; peek rule still sets the floor. */
+	const LIST_TARGET_COL_WIDTH = 400;
 
 	interface Props {
 		viewportEl?: HTMLDivElement | null;
@@ -117,14 +119,26 @@
 		return 1;
 	}
 
-	function computeDefaultListColumns(viewportW: number, viewportH: number, ratio: number): number {
+	function computeDefaultListColumns(
+		viewportW: number,
+		viewportH: number,
+		ratio: number,
+		imageCount: number
+	): number {
 		const innerW = Math.max(1, viewportW - LIST_GRID_PAD);
 		const innerH = Math.max(1, viewportH - LIST_GRID_PAD);
 		const r = ratio > 0 ? ratio : 1;
 		const maxColW = (innerH * r) / (1 + LIST_NEXT_ROW_PEEK);
-		if (maxColW <= 0) return 2;
-		const needed = Math.ceil((innerW + LIST_GRID_GAP) / (maxColW + LIST_GRID_GAP));
-		return Math.max(LIST_COLUMNS_MIN, Math.min(LIST_COLUMNS_MAX, needed));
+		const minForPeek =
+			maxColW > 0
+				? Math.ceil((innerW + LIST_GRID_GAP) / (maxColW + LIST_GRID_GAP))
+				: 2;
+		const byTarget = Math.max(
+			1,
+			Math.round((innerW + LIST_GRID_GAP) / (LIST_TARGET_COL_WIDTH + LIST_GRID_GAP))
+		);
+		const denser = Math.min(LIST_COLUMNS_MAX, byTarget, Math.max(1, imageCount));
+		return Math.max(LIST_COLUMNS_MIN, Math.min(LIST_COLUMNS_MAX, Math.max(minForPeek, denser)));
 	}
 
 	function listColumnsIn() {
@@ -161,11 +175,12 @@
 		const r = listFrameRatio();
 		const w = containerSize.width;
 		const h = containerSize.height;
+		const count = stackImages.length;
 		if (w <= 0 || h <= 0) return;
 		if (listColumnsManual && Math.abs(r - listColumnsAutoRatio) < 1e-9) return;
 		listColumnsManual = false;
 		listColumnsAutoRatio = r;
-		listColumns = computeDefaultListColumns(w, h, r);
+		listColumns = computeDefaultListColumns(w, h, r, count);
 	});
 
 	function getTouchDist(touches: TouchList): number {

@@ -100,3 +100,102 @@ export function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: numb
 		timeout = setTimeout(() => fn(...args), ms);
 	};
 }
+
+export function isTrackpadPinch(e: WheelEvent): boolean {
+	return e.ctrlKey || e.metaKey;
+}
+
+export function isLikelyMouseWheel(e: WheelEvent): boolean {
+	if (e.deltaMode !== 0) return true;
+	return Math.abs(e.deltaX) < 1 && Math.abs(e.deltaY) >= 40;
+}
+
+export function trackpadPinchFactor(e: WheelEvent): number {
+	return Math.exp(-e.deltaY * 0.0055);
+}
+
+export const MOUSE_WHEEL_ZOOM_STEP = 1.07;
+
+export function wheelZoomFactor(e: WheelEvent): number {
+	if (isTrackpadPinch(e)) return trackpadPinchFactor(e);
+	if (isLikelyMouseWheel(e)) {
+		return e.deltaY > 0 ? 1 / MOUSE_WHEEL_ZOOM_STEP : MOUSE_WHEEL_ZOOM_STEP;
+	}
+	const dy = Math.max(-40, Math.min(40, e.deltaY));
+	return Math.exp(-dy * 0.004);
+}
+
+export function panAfterZoomToward(
+	panX: number,
+	panY: number,
+	zoomFrom: number,
+	zoomTo: number,
+	viewX: number,
+	viewY: number
+): { panX: number; panY: number } {
+	if (zoomFrom <= 0 || Math.abs(zoomTo - zoomFrom) < 1e-9) return { panX, panY };
+	const r = zoomTo / zoomFrom;
+	return {
+		panX: viewX * (1 - r) + panX * r,
+		panY: viewY * (1 - r) + panY * r
+	};
+}
+
+export function createSmoothZoom(options: {
+	get: () => number;
+	set: (value: number) => void;
+	onFrame?: () => void;
+	ease?: number;
+}) {
+	let target = options.get();
+	let raf = 0;
+	const ease = options.ease ?? 0.2;
+
+	function tick() {
+		raf = 0;
+		const cur = options.get();
+		const diff = target - cur;
+		if (Math.abs(diff) < 0.0015) {
+			if (cur !== target) {
+				options.set(target);
+				options.onFrame?.();
+			}
+			return;
+		}
+		options.set(cur + diff * ease);
+		options.onFrame?.();
+		raf = requestAnimationFrame(tick);
+	}
+
+	return {
+		getTarget: () => target,
+		setTarget(value: number, immediate = false) {
+			target = value;
+			if (immediate) {
+				if (raf) {
+					cancelAnimationFrame(raf);
+					raf = 0;
+				}
+				options.set(value);
+				options.onFrame?.();
+				return;
+			}
+			const cur = options.get();
+			if (Math.abs(target - cur) >= 0.0015) {
+				options.set(cur + (target - cur) * ease);
+				options.onFrame?.();
+			}
+			if (!raf) raf = requestAnimationFrame(tick);
+		},
+		syncFromDisplay() {
+			target = options.get();
+		},
+		stop() {
+			if (raf) {
+				cancelAnimationFrame(raf);
+				raf = 0;
+			}
+			target = options.get();
+		}
+	};
+}

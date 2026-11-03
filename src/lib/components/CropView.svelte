@@ -1,6 +1,14 @@
 <script lang="ts">
 	import { getCanvasDimensions, renderCanvas } from '#lib/renderer.js';
-	import { debounce } from '#lib/utils.js';
+	import { untrack } from 'svelte';
+	import {
+		createSmoothZoom,
+		debounce,
+		isLikelyMouseWheel,
+		isTrackpadPinch,
+		panAfterZoomToward,
+		wheelZoomFactor
+	} from '#lib/utils.js';
 	import { MAX_PREVIEW, MAX_ZOOM, ZOOM_RETURN_DURATION } from '#lib/constants.js';
 	import type { BorderType } from '#lib/types.js';
 
@@ -118,6 +126,23 @@
 		// No-op during pinch; Fit mode animates back on release
 	}
 
+	let wheelFocal: { vx: number; vy: number; cx: number; cy: number } | null = null;
+
+	const smoothZoom = createSmoothZoom({
+		get: () => zoom,
+		set: (v) => {
+			zoom = v;
+		},
+		onFrame: () => {
+			if (wheelFocal) {
+				panX = wheelFocal.vx - wheelFocal.cx * zoom;
+				panY = wheelFocal.vy - wheelFocal.cy * zoom;
+			}
+			clampPan();
+		},
+		ease: 0.28
+	});
+
 	const doRender = () => {
 		if (!canvasEl || !previewImage || previewDims.width <= 0 || previewDims.height <= 0) return;
 		renderCanvas(canvasEl, {
@@ -181,6 +206,7 @@
 		panBackRaf = requestAnimationFrame(tick);
 	}
 	function animateZoomBackTo100() {
+		smoothZoom.stop();
 		zoomReturning = true;
 		const startZoom = zoom;
 		const startPanX = panX;
@@ -216,12 +242,14 @@
 				}
 				zoomReturnRaf = 0;
 				zoomReturning = false;
+				smoothZoom.syncFromDisplay();
 			}
 		};
 		cancelAnimationFrame(zoomReturnRaf);
 		zoomReturnRaf = requestAnimationFrame(tick);
 	}
 	function animateZoomBackTo300() {
+		smoothZoom.stop();
 		zoomReturningToMax = true;
 		const startZoom = zoom;
 		const startPanX = panX;
@@ -244,6 +272,7 @@
 				zoom = MAX_ZOOM;
 				zoomReturnRaf = 0;
 				zoomReturningToMax = false;
+				smoothZoom.syncFromDisplay();
 				if (fitMode) animatePanBackIntoView();
 			}
 		};
@@ -253,6 +282,7 @@
 
 	function onTouchStart(e: TouchEvent) {
 		if (e.touches.length === 2) {
+			smoothZoom.stop();
 			cancelAnimationFrame(zoomReturnRaf);
 			cancelAnimationFrame(panBackRaf);
 			panBackRaf = 0;
@@ -301,6 +331,7 @@
 			}
 			clampPanForZoom(newZoom);
 			zoom = newZoom;
+			smoothZoom.syncFromDisplay();
 		} else if (e.touches.length === 1 && isPanning) {
 			e.preventDefault();
 			panX = panStartPanX + (e.touches[0].clientX - panStartX);
@@ -353,30 +384,88 @@
 		fitMode = !fitMode;
 		if (fitMode) animatePanBackIntoView();
 	}
+
 	function setZoom100() {
-		zoom = fitZoom;
+		wheelFocal = null;
+		smoothZoom.setTarget(fitZoom, true);
 		panX = 0;
 		panY = 0;
 	}
 	function zoomIn() {
-		zoom = Math.min(MAX_ZOOM, zoom * 1.25);
+		wheelFocal = null;
+		smoothZoom.setTarget(Math.min(MAX_ZOOM, smoothZoom.getTarget() * 1.25), true);
 	}
 	function zoomOut() {
-		if (zoom <= 1) {
+		if (smoothZoom.getTarget() <= 1) {
 			if (!zoomBounce) {
 				zoomBounce = true;
 				setTimeout(() => { zoomBounce = false; }, 400);
 			}
 			return;
 		}
-		zoom = Math.max(1, zoom / 1.25);
+		wheelFocal = null;
+		smoothZoom.setTarget(Math.max(1, smoothZoom.getTarget() / 1.25), true);
+	}
+
+	function applyCropWheelZoom(e: WheelEvent) {
+		cancelAnimationFrame(zoomReturnRaf);
+		zoomReturnRaf = 0;
+		zoomReturning = false;
+		zoomReturningToMax = false;
+		const prevTarget = smoothZoom.getTarget();
+		const next = Math.min(MAX_ZOOM, Math.max(1, prevTarget * wheelZoomFactor(e)));
+		if (Math.abs(next - prevTarget) < 1e-6) return;
+		const rect = viewportEl?.getBoundingClientRect();
+		const vx = rect ? e.clientX - (rect.left + rect.width / 2) : 0;
+		const vy = rect ? e.clientY - (rect.top + rect.height / 2) : 0;
+
+		if (isTrackpadPinch(e) || !isLikelyMouseWheel(e)) {
+			wheelFocal = null;
+			const p = panAfterZoomToward(panX, panY, zoom, next, vx, vy);
+			panX = p.panX;
+			panY = p.panY;
+			smoothZoom.setTarget(next, true);
+			clampPan();
+			return;
+		}
+
+		wheelFocal = {
+			vx,
+			vy,
+			cx: zoom > 0 ? (vx - panX) / zoom : 0,
+			cy: zoom > 0 ? (vy - panY) / zoom : 0
+		};
+		smoothZoom.setTarget(next);
+	}
+
+	function onWheel(e: WheelEvent) {
+		if (!previewImage) return;
+		if (isTrackpadPinch(e) || isLikelyMouseWheel(e)) {
+			e.preventDefault();
+			applyCropWheelZoom(e);
+			return;
+		}
+		if (canPan) {
+			e.preventDefault();
+			panX -= e.deltaX;
+			panY -= e.deltaY;
+			clampPan();
+			return;
+		}
+		if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+			e.preventDefault();
+			applyCropWheelZoom(e);
+		}
 	}
 
 	$effect(() => {
-		if (!previewImage) return;
-		zoom = fitZoom;
-		panX = 0;
-		panY = 0;
+		const img = previewImage;
+		if (!img) return;
+		untrack(() => {
+			smoothZoom.setTarget(fitZoom, true);
+			panX = 0;
+			panY = 0;
+		});
 	});
 	$effect(() => {
 		zoom;
@@ -386,6 +475,12 @@
 		previewDims.height;
 		if (zoomReturning || zoomReturningToMax || pinchActive) return;
 		clampPan();
+	});
+	$effect(() => {
+		const el = viewportEl;
+		if (!el || !previewImage) return;
+		el.addEventListener('wheel', onWheel, { passive: false });
+		return () => el.removeEventListener('wheel', onWheel);
 	});
 </script>
 
@@ -410,16 +505,18 @@
 			bind:this={canvasViewportEl}
 			class="canvas-zoom-wrap"
 			class:can-pan={canPan}
-			style="transform: translate({panX}px, {panY}px) scale({zoom}); transform-origin: center center;"
+			style="transform: translate({panX}px, {panY}px)"
 			class:grabbing={isPanning}
 		>
-			<div class="canvas-bounce-wrap" class:zoom-bounce={zoomBounce}>
-				<canvas
-					bind:this={canvasEl}
-					class="canvas"
-					width={previewDims.width}
-					height={previewDims.height}
-				></canvas>
+			<div class="canvas-zoom-scale" style="transform: scale({zoom})">
+				<div class="canvas-bounce-wrap" class:zoom-bounce={zoomBounce}>
+					<canvas
+						bind:this={canvasEl}
+						class="canvas"
+						width={previewDims.width}
+						height={previewDims.height}
+					></canvas>
+				</div>
 			</div>
 		</div>
 	{:else}
@@ -513,12 +610,20 @@
 		justify-content: center;
 		will-change: transform;
 		cursor: default;
+		transform-origin: center center;
 	}
 	.canvas-zoom-wrap.can-pan {
 		cursor: grab;
 	}
 	.canvas-zoom-wrap.can-pan.grabbing {
 		cursor: grabbing;
+	}
+	.canvas-zoom-scale {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transform-origin: center center;
+		will-change: transform;
 	}
 	.canvas-bounce-wrap {
 		transform: scale(1);

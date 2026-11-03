@@ -1,6 +1,13 @@
 <script lang="ts">
 	import { getCanvasDimensions, renderCanvas } from '#lib/renderer.js';
-	import { debounce } from '#lib/utils.js';
+	import {
+		createSmoothZoom,
+		debounce,
+		isLikelyMouseWheel,
+		isTrackpadPinch,
+		panAfterZoomToward,
+		wheelZoomFactor
+	} from '#lib/utils.js';
 	import { STACK_PREVIEW_MAX, STACK_ZOOM_MIN, STACK_ZOOM_MAX, STACK_ZOOM_STEP } from '#lib/constants.js';
 	import type { BorderType } from '#lib/types.js';
 
@@ -11,6 +18,9 @@
 
 	const SWIPE_THRESHOLD = 60;
 	const SWIPE_DRAG_CLAMP = 0.4;
+	const SWIPE_ANIM_MS = 280;
+	const WHEEL_NAV_THRESHOLD = 100;
+	const WHEEL_NAV_COOLDOWN_MS = 380;
 	const LIST_GRID_MIN_COL = 440;
 	const LIST_GRID_GAP = 12;
 	const LIST_GRID_PAD = 32;
@@ -50,6 +60,10 @@
 	let stackViewMode = $state<'list' | 'story'>('list');
 	let stackStoryIndex = $state(0);
 	let stackZoom = $state(1);
+	let stackPanX = $state(0);
+	let stackPanY = $state(0);
+	let stackIsPanning = $state(false);
+	let stackPanPointerStart = $state<{ x: number; y: number; panX: number; panY: number } | null>(null);
 	let stackListEl = $state<HTMLDivElement | null>(null);
 	let stackScrollEl = $state<HTMLDivElement | null>(null);
 	let dragFromIndex = $state<number | null>(null);
@@ -63,8 +77,25 @@
 	let stackSwipeCanvasRight = $state<HTMLCanvasElement | null>(null);
 	let stackSwipeDragOffset = $state(0);
 	let stackSwipePointerStart = $state<{ x: number; startOffset: number } | null>(null);
+	let stackSwipeAnimating = $state(false);
+	let stackSwipeAnimRaf = 0;
+	let stackGestureMode = $state<'slide' | 'zoom'>('slide');
+	let stackPinchActive = $state(false);
+	let stackPinchInitialDist = 0;
+	let stackPinchInitialZoom = 1;
+	let stackPinchOriginX = 0;
+	let stackPinchOriginY = 0;
+	let stackPinchStartPanX = 0;
+	let stackPinchStartPanY = 0;
+	let wheelNavAccum = 0;
+	let wheelNavCooldownUntil = 0;
 	let browseForcedSingleCol = $state(
 		typeof window !== 'undefined' ? window.matchMedia(LIST_SINGLE_COL_MQ).matches : false
+	);
+	let touchUi = $state(
+		typeof window !== 'undefined'
+			? window.matchMedia('(hover: none), (pointer: coarse)').matches
+			: false
 	);
 
 	const stackStoryCurrentItem = $derived(
@@ -81,13 +112,34 @@
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		const mq = window.matchMedia(LIST_SINGLE_COL_MQ);
+		const touchMq = window.matchMedia('(hover: none), (pointer: coarse)');
 		const sync = () => {
 			browseForcedSingleCol = mq.matches;
 		};
+		const syncTouch = () => {
+			touchUi = touchMq.matches;
+		};
 		sync();
+		syncTouch();
 		mq.addEventListener('change', sync);
-		return () => mq.removeEventListener('change', sync);
+		touchMq.addEventListener('change', syncTouch);
+		return () => {
+			mq.removeEventListener('change', sync);
+			touchMq.removeEventListener('change', syncTouch);
+		};
 	});
+
+	function getTouchDist(touches: TouchList): number {
+		if (touches.length < 2) return 0;
+		return Math.hypot(
+			touches[1].clientX - touches[0].clientX,
+			touches[1].clientY - touches[0].clientY
+		);
+	}
+
+	function setStackGestureMode(mode: 'slide' | 'zoom') {
+		stackGestureMode = mode;
+	}
 
 	function getStackSwipeDims(item: StackImage) {
 		if (!item || containerSize.width <= 0 || containerSize.height <= 0)
@@ -112,27 +164,124 @@
 	const stackStoryDims = $derived.by(() =>
 		stackStoryCurrentItem ? getStackSwipeDims(stackStoryCurrentItem) : { width: 0, height: 0 }
 	);
+	const stackCanPan = $derived(stackZoom > 1.001);
+	const stackDragPans = $derived(stackGestureMode === 'zoom' || stackCanPan);
+	const stackPanTransform = $derived(`translate(${stackPanX}px, ${stackPanY}px)`);
+	const stackScaleTransform = $derived(`scale(${stackZoom})`);
+
+	function clampStackPan() {
+		const cW = stackStoryDims.width * stackZoom;
+		const cH = stackStoryDims.height * stackZoom;
+		const halfX = Math.max(0, (cW - containerSize.width) / 2);
+		const halfY = Math.max(0, (cH - containerSize.height) / 2);
+		stackPanX = Math.max(-halfX, Math.min(halfX, stackPanX));
+		stackPanY = Math.max(-halfY, Math.min(halfY, stackPanY));
+	}
+
+	function resetStackPan() {
+		stackPanX = 0;
+		stackPanY = 0;
+	}
+
+	function easeOutCubic(t: number) {
+		return 1 - (1 - t) ** 3;
+	}
+
+	function animateSwipeOffset(to: number, onDone?: () => void) {
+		cancelAnimationFrame(stackSwipeAnimRaf);
+		const from = stackSwipeDragOffset;
+		const start = performance.now();
+		stackSwipeAnimating = true;
+		stackSwipePointerStart = null;
+		const tick = (now: number) => {
+			const t = Math.min(1, (now - start) / SWIPE_ANIM_MS);
+			stackSwipeDragOffset = from + (to - from) * easeOutCubic(t);
+			if (t < 1) {
+				stackSwipeAnimRaf = requestAnimationFrame(tick);
+				return;
+			}
+			stackSwipeDragOffset = to;
+			stackSwipeAnimating = false;
+			stackSwipeAnimRaf = 0;
+			onDone?.();
+		};
+		stackSwipeAnimRaf = requestAnimationFrame(tick);
+	}
+
+	function commitSwipeTo(dir: -1 | 1) {
+		const w = containerSize.width;
+		if (w <= 0) return;
+		animateSwipeOffset(dir * w, () => {
+			stackStoryIndex = Math.max(0, Math.min(stackImages.length - 1, stackStoryIndex - dir));
+			resetStackPan();
+			stackSwipeDragOffset = 0;
+		});
+	}
+
+	function finishSwipeGesture(offset: number) {
+		if (offset > SWIPE_THRESHOLD && stackStoryIndex > 0) commitSwipeTo(1);
+		else if (offset < -SWIPE_THRESHOLD && stackStoryIndex < stackImages.length - 1) commitSwipeTo(-1);
+		else animateSwipeOffset(0);
+	}
 
 	function stackStoryPrev() {
-		if (stackImages.length <= 1) return;
-		stackStoryIndex = Math.max(0, stackStoryIndex - 1);
+		if (stackSwipeAnimating || stackImages.length <= 1 || stackStoryIndex <= 0) return;
+		if (stackViewMode === 'story' && stackImages.length > 1) commitSwipeTo(1);
+		else {
+			stackStoryIndex = Math.max(0, stackStoryIndex - 1);
+			resetStackPan();
+		}
 	}
 	function stackStoryNext() {
-		if (stackImages.length <= 1) return;
-		stackStoryIndex = Math.min(stackImages.length - 1, stackStoryIndex + 1);
+		if (stackSwipeAnimating || stackImages.length <= 1 || stackStoryIndex >= stackImages.length - 1)
+			return;
+		if (stackViewMode === 'story' && stackImages.length > 1) commitSwipeTo(-1);
+		else {
+			stackStoryIndex = Math.min(stackImages.length - 1, stackStoryIndex + 1);
+			resetStackPan();
+		}
 	}
+	let stackWheelFocal: { vx: number; vy: number; cx: number; cy: number } | null = null;
+
+	const smoothStackZoom = createSmoothZoom({
+		get: () => stackZoom,
+		set: (v) => {
+			stackZoom = v;
+		},
+		onFrame: () => {
+			if (stackWheelFocal) {
+				stackPanX = stackWheelFocal.vx - stackWheelFocal.cx * stackZoom;
+				stackPanY = stackWheelFocal.vy - stackWheelFocal.cy * stackZoom;
+			}
+			if (stackZoom <= 1) resetStackPan();
+			else clampStackPan();
+		},
+		ease: 0.28
+	});
+
 	function stackZoomIn() {
-		stackZoom = Math.min(STACK_ZOOM_MAX, Math.round((stackZoom + STACK_ZOOM_STEP) * 100) / 100);
+		stackWheelFocal = null;
+		const next = Math.min(STACK_ZOOM_MAX, Math.round((smoothStackZoom.getTarget() + STACK_ZOOM_STEP) * 100) / 100);
+		smoothStackZoom.setTarget(next, true);
+		clampStackPan();
 	}
 	function stackZoomOut() {
-		stackZoom = Math.max(STACK_ZOOM_MIN, Math.round((stackZoom - STACK_ZOOM_STEP) * 100) / 100);
+		stackWheelFocal = null;
+		const next = Math.max(STACK_ZOOM_MIN, Math.round((smoothStackZoom.getTarget() - STACK_ZOOM_STEP) * 100) / 100);
+		smoothStackZoom.setTarget(next, true);
+		if (next <= 1) resetStackPan();
+		else clampStackPan();
 	}
 	function stackZoomReset() {
-		stackZoom = 1;
+		stackWheelFocal = null;
+		smoothStackZoom.setTarget(1, true);
+		resetStackPan();
+		if (touchUi) stackGestureMode = 'slide';
 	}
 	function openSwipeAt(index: number) {
 		if (index < 0 || index >= stackImages.length) return;
 		stackStoryIndex = index;
+		resetStackPan();
 		stackViewMode = 'story';
 	}
 
@@ -241,11 +390,79 @@
 		}
 	});
 
+	function applyStackWheelZoom(e: WheelEvent) {
+		const prevTarget = smoothStackZoom.getTarget();
+		const next = Math.min(STACK_ZOOM_MAX, Math.max(STACK_ZOOM_MIN, prevTarget * wheelZoomFactor(e)));
+		if (Math.abs(next - prevTarget) < 1e-6) return;
+		const rect = viewportEl?.getBoundingClientRect();
+		const vx = rect ? e.clientX - (rect.left + rect.width / 2) : 0;
+		const vy = rect ? e.clientY - (rect.top + rect.height / 2) : 0;
+
+		if (isTrackpadPinch(e) || !isLikelyMouseWheel(e)) {
+			stackWheelFocal = null;
+			const p = panAfterZoomToward(stackPanX, stackPanY, stackZoom, next, vx, vy);
+			stackPanX = p.panX;
+			stackPanY = p.panY;
+			smoothStackZoom.setTarget(next, true);
+			if (stackZoom <= 1) resetStackPan();
+			else clampStackPan();
+			return;
+		}
+
+		stackWheelFocal = {
+			vx,
+			vy,
+			cx: stackZoom > 0 ? (vx - stackPanX) / stackZoom : 0,
+			cy: stackZoom > 0 ? (vy - stackPanY) / stackZoom : 0
+		};
+		smoothStackZoom.setTarget(next);
+	}
+
 	function onStackStoryWheel(e: WheelEvent) {
-		if (stackViewMode !== 'story' || stackImages.length <= 1) return;
+		if (stackViewMode !== 'story') return;
+		const absX = Math.abs(e.deltaX);
+		const absY = Math.abs(e.deltaY);
+
+		if (isTrackpadPinch(e) || isLikelyMouseWheel(e)) {
+			e.preventDefault();
+			applyStackWheelZoom(e);
+			wheelNavAccum = 0;
+			return;
+		}
+
+		if (stackCanPan) {
+			e.preventDefault();
+			stackPanX -= e.deltaX;
+			stackPanY -= e.deltaY;
+			clampStackPan();
+			wheelNavAccum = 0;
+			return;
+		}
+
+		if (absY > absX) {
+			e.preventDefault();
+			applyStackWheelZoom(e);
+			wheelNavAccum = 0;
+			return;
+		}
+
+		if (stackImages.length <= 1 || absX === 0) return;
 		e.preventDefault();
-		if (e.deltaY > 0) stackStoryNext();
-		else if (e.deltaY < 0) stackStoryPrev();
+		const now = performance.now();
+		if (now < wheelNavCooldownUntil) {
+			wheelNavAccum = 0;
+			return;
+		}
+		if (wheelNavAccum !== 0 && Math.sign(e.deltaX) !== Math.sign(wheelNavAccum)) {
+			wheelNavAccum = e.deltaX;
+			return;
+		}
+		wheelNavAccum += e.deltaX;
+		if (Math.abs(wheelNavAccum) < WHEEL_NAV_THRESHOLD) return;
+		if (wheelNavAccum > 0) stackStoryNext();
+		else stackStoryPrev();
+		wheelNavAccum = 0;
+		wheelNavCooldownUntil = now + WHEEL_NAV_COOLDOWN_MS;
 	}
 
 	function clampSwipeOffset(offset: number) {
@@ -257,11 +474,26 @@
 	}
 
 	function onStackSwipePointerDown(e: PointerEvent) {
-		if (e.button !== 0) return;
+		if (e.button !== 0 || stackPinchActive || stackSwipeAnimating) return;
 		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		if (stackDragPans) {
+			stackIsPanning = true;
+			stackPanPointerStart = { x: e.clientX, y: e.clientY, panX: stackPanX, panY: stackPanY };
+			stackSwipePointerStart = null;
+			return;
+		}
+		stackIsPanning = false;
+		stackPanPointerStart = null;
 		stackSwipePointerStart = { x: e.clientX, startOffset: stackSwipeDragOffset };
 	}
 	function onStackSwipePointerMove(e: PointerEvent) {
+		if (stackPinchActive) return;
+		if (stackIsPanning && stackPanPointerStart) {
+			stackPanX = stackPanPointerStart.panX + (e.clientX - stackPanPointerStart.x);
+			stackPanY = stackPanPointerStart.panY + (e.clientY - stackPanPointerStart.y);
+			clampStackPan();
+			return;
+		}
 		if (!stackSwipePointerStart) return;
 		const raw = stackSwipePointerStart.startOffset + (e.clientX - stackSwipePointerStart.x);
 		stackSwipeDragOffset = clampSwipeOffset(raw);
@@ -269,29 +501,147 @@
 	function onStackSwipePointerUp(e: PointerEvent) {
 		if (e.button !== 0) return;
 		(e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+		if (stackIsPanning) {
+			stackIsPanning = false;
+			stackPanPointerStart = null;
+			return;
+		}
+		if (stackSwipeAnimating) return;
 		const offset = stackSwipeDragOffset;
 		stackSwipePointerStart = null;
-		if (offset > SWIPE_THRESHOLD && stackStoryIndex > 0) stackStoryPrev();
-		else if (offset < -SWIPE_THRESHOLD && stackStoryIndex < stackImages.length - 1) stackStoryNext();
-		stackSwipeDragOffset = 0;
+		finishSwipeGesture(offset);
 	}
 	function onStackSwipeTouchStart(e: TouchEvent) {
-		if (e.touches.length === 1)
-			stackSwipePointerStart = { x: e.touches[0].clientX, startOffset: stackSwipeDragOffset };
+		if (stackSwipeAnimating) return;
+		if (e.touches.length === 2) {
+			e.preventDefault();
+			stackWheelFocal = null;
+			smoothStackZoom.stop();
+			stackIsPanning = false;
+			stackPanPointerStart = null;
+			stackSwipePointerStart = null;
+			stackSwipeDragOffset = 0;
+			stackPinchActive = true;
+			stackPinchInitialDist = getTouchDist(e.touches);
+			stackPinchInitialZoom = stackZoom;
+			stackPinchOriginX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+			stackPinchOriginY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+			stackPinchStartPanX = stackPanX;
+			stackPinchStartPanY = stackPanY;
+			stackGestureMode = 'zoom';
+			return;
+		}
+		if (e.touches.length !== 1 || stackPinchActive) return;
+		if (stackDragPans) {
+			stackIsPanning = true;
+			stackPanPointerStart = {
+				x: e.touches[0].clientX,
+				y: e.touches[0].clientY,
+				panX: stackPanX,
+				panY: stackPanY
+			};
+			stackSwipePointerStart = null;
+			return;
+		}
+		stackSwipePointerStart = { x: e.touches[0].clientX, startOffset: stackSwipeDragOffset };
 	}
 	function onStackSwipeTouchMove(e: TouchEvent) {
+		if (e.touches.length === 2 && stackPinchInitialDist > 0) {
+			e.preventDefault();
+			stackIsPanning = false;
+			const dist = getTouchDist(e.touches);
+			const scale = dist / stackPinchInitialDist;
+			const next = Math.min(
+				STACK_ZOOM_MAX,
+				Math.max(STACK_ZOOM_MIN, stackPinchInitialZoom * scale)
+			);
+			const pinchCenterX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+			const pinchCenterY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+			const dragDeltaX = pinchCenterX - stackPinchOriginX;
+			const dragDeltaY = pinchCenterY - stackPinchOriginY;
+			if (viewportEl) {
+				const rect = viewportEl.getBoundingClientRect();
+				const vcx = rect.left + rect.width / 2;
+				const vcy = rect.top + rect.height / 2;
+				const r = next / stackPinchInitialZoom;
+				stackPanX =
+					(1 - r) * (stackPinchOriginX - vcx) + r * stackPinchStartPanX + dragDeltaX;
+				stackPanY =
+					(1 - r) * (stackPinchOriginY - vcy) + r * stackPinchStartPanY + dragDeltaY;
+			}
+			smoothStackZoom.setTarget(next, true);
+			if (next <= 1) resetStackPan();
+			else clampStackPan();
+			return;
+		}
+		if (stackIsPanning && stackPanPointerStart && e.touches.length === 1) {
+			e.preventDefault();
+			stackPanX = stackPanPointerStart.panX + (e.touches[0].clientX - stackPanPointerStart.x);
+			stackPanY = stackPanPointerStart.panY + (e.touches[0].clientY - stackPanPointerStart.y);
+			clampStackPan();
+			return;
+		}
 		if (!stackSwipePointerStart || e.touches.length !== 1) return;
 		const raw = stackSwipePointerStart.startOffset + (e.touches[0].clientX - stackSwipePointerStart.x);
 		stackSwipeDragOffset = clampSwipeOffset(raw);
 	}
 	function onStackSwipeTouchEnd(e: TouchEvent) {
+		if (e.touches.length >= 2) return;
+		if (stackPinchActive && e.touches.length < 2) {
+			stackPinchActive = false;
+			stackPinchInitialDist = 0;
+			smoothStackZoom.syncFromDisplay();
+			if (stackZoom <= 1) {
+				resetStackPan();
+			} else {
+				clampStackPan();
+			}
+			if (e.touches.length === 1) {
+				stackIsPanning = true;
+				stackPanPointerStart = {
+					x: e.touches[0].clientX,
+					y: e.touches[0].clientY,
+					panX: stackPanX,
+					panY: stackPanY
+				};
+			}
+			return;
+		}
 		if (e.changedTouches.length !== 1) return;
+		if (stackIsPanning) {
+			stackIsPanning = false;
+			stackPanPointerStart = null;
+			return;
+		}
+		if (stackSwipeAnimating) return;
 		const offset = stackSwipeDragOffset;
 		stackSwipePointerStart = null;
-		if (offset > SWIPE_THRESHOLD && stackStoryIndex > 0) stackStoryPrev();
-		else if (offset < -SWIPE_THRESHOLD && stackStoryIndex < stackImages.length - 1) stackStoryNext();
-		stackSwipeDragOffset = 0;
+		finishSwipeGesture(offset);
 	}
+
+	$effect(() => {
+		stackZoom;
+		stackStoryDims.width;
+		stackStoryDims.height;
+		containerSize.width;
+		containerSize.height;
+		if (stackViewMode !== 'story') return;
+		clampStackPan();
+	});
+
+	$effect(() => {
+		if (stackViewMode !== 'story') {
+			wheelNavAccum = 0;
+			wheelNavCooldownUntil = 0;
+		}
+	});
+
+	$effect(() => {
+		const el = viewportEl;
+		if (!el || stackViewMode !== 'story' || !stackImages.length) return;
+		el.addEventListener('wheel', onStackStoryWheel, { passive: false });
+		return () => el.removeEventListener('wheel', onStackStoryWheel);
+	});
 
 	function syncListHoverFromPoint(x: number, y: number) {
 		if (!stackListEl) {
@@ -322,67 +672,50 @@
 		}
 	}
 
-	function onListDragStart(e: DragEvent, index: number) {
+	function listIndexFromPoint(clientX: number, clientY: number): number | null {
+		if (!stackListEl) return null;
+		const wraps = stackListEl.querySelectorAll('.stack-cell-wrap');
+		if (!wraps.length) return null;
+		for (let i = 0; i < wraps.length; i++) {
+			const r = wraps[i].getBoundingClientRect();
+			if (clientY >= r.top && clientY <= r.bottom) return i;
+		}
+		const first = wraps[0].getBoundingClientRect();
+		if (clientY < first.top) return 0;
+		return wraps.length - 1;
+	}
+
+	function onListHandlePointerDown(e: PointerEvent, index: number) {
+		if (e.button !== 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 		dragFromIndex = index;
 		dragOverIndex = index;
 		listHoverIndex = null;
 		lastDragPoint = { x: e.clientX, y: e.clientY };
-		if (e.dataTransfer) {
-			e.dataTransfer.effectAllowed = 'move';
-			e.dataTransfer.setData('text/plain', String(index));
-		}
-		const wrap = (e.currentTarget as HTMLElement).closest('.stack-cell-wrap');
-		if (wrap instanceof HTMLElement) wrap.classList.add('dragging');
 		if (e.currentTarget instanceof HTMLElement) e.currentTarget.blur();
 	}
 
-	function finishListDrag(e: DragEvent) {
-		dragFromIndex = null;
-		dragOverIndex = null;
-		const wrap = (e.currentTarget as HTMLElement).closest('.stack-cell-wrap');
-		if (wrap instanceof HTMLElement) wrap.classList.remove('dragging');
-		if (e.currentTarget instanceof HTMLElement) e.currentTarget.blur();
-		// CSS :hover sticks after DnD until the next real mousemove — re-sync from pointer
-		requestAnimationFrame(() => syncListHoverFromPoint(lastDragPoint.x, lastDragPoint.y));
-	}
-
-	function onListDragEnd(e: DragEvent) {
-		finishListDrag(e);
-	}
-
-	function onListDragOver(e: DragEvent, index: number) {
-		e.preventDefault();
-		lastDragPoint = { x: e.clientX, y: e.clientY };
-		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-		autoScrollWhileDragging(e.clientY);
-		if (dragFromIndex == null || dragFromIndex === index) {
-			dragOverIndex = dragFromIndex;
-			return;
-		}
-		dragOverIndex = index;
-	}
-
-	function onStackScrollDragOver(e: DragEvent) {
+	function onListHandlePointerMove(e: PointerEvent) {
 		if (dragFromIndex == null) return;
 		e.preventDefault();
 		lastDragPoint = { x: e.clientX, y: e.clientY };
-		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
 		autoScrollWhileDragging(e.clientY);
+		const idx = listIndexFromPoint(e.clientX, e.clientY);
+		if (idx != null) dragOverIndex = idx;
 	}
 
-	function onListDrop(e: DragEvent, index: number) {
+	function onListHandlePointerUp(e: PointerEvent) {
+		if (dragFromIndex == null) return;
 		e.preventDefault();
-		lastDragPoint = { x: e.clientX, y: e.clientY };
+		(e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
 		const from = dragFromIndex;
-		if (from != null && from !== index) reorderStack(from, index);
-		finishListDrag(e);
-	}
-
-	function onListDragLeave(e: DragEvent, index: number) {
-		const related = e.relatedTarget as Node | null;
-		const wrap = e.currentTarget as HTMLElement;
-		if (related && wrap.contains(related)) return;
-		if (dragOverIndex === index) dragOverIndex = dragFromIndex;
+		const to = dragOverIndex;
+		dragFromIndex = null;
+		dragOverIndex = null;
+		if (from != null && to != null && from !== to) reorderStack(from, to);
+		requestAnimationFrame(() => syncListHoverFromPoint(lastDragPoint.x, lastDragPoint.y));
 	}
 
 	function onListPointerEnter(index: number) {
@@ -404,13 +737,15 @@
 	class="canvas-viewport stack-viewport"
 	class:dropzone={!stackImages.length}
 	class:stack-story-view={stackViewMode === 'story' && stackImages.length > 0}
-	onwheel={stackViewMode === 'story' && stackImages.length > 1 ? onStackStoryWheel : undefined}
+	class:stack-can-pan={stackViewMode === 'story' && stackDragPans}
+	class:stack-panning={stackViewMode === 'story' && stackIsPanning}
 >
 	{#if stackImages.length}
 		{#if stackViewMode === 'story'}
 			{#if stackImages.length > 1}
 				<div
 					class="stack-swipe-track"
+					class:swipe-animating={stackSwipeAnimating}
 					style="transform: translateX({stackSwipeDragOffset}px); width: {containerSize.width * 3}px;"
 					onpointerdown={onStackSwipePointerDown}
 					onpointermove={onStackSwipePointerMove}
@@ -422,55 +757,69 @@
 					ontouchcancel={onStackSwipeTouchEnd}
 				>
 					<div class="stack-swipe-panel" style="width: {containerSize.width}px; height: {containerSize.height}px;">
-						<canvas
-							bind:this={stackSwipeCanvasLeft}
-							class="stack-story-canvas"
-							style="transform: scale({stackZoom})"
-							width={stackStoryIndex > 0 ? getStackSwipeDims(stackImages[stackStoryIndex - 1]).width : 0}
-							height={stackStoryIndex > 0 ? getStackSwipeDims(stackImages[stackStoryIndex - 1]).height : 0}
-						></canvas>
+						<div class="stack-story-pan" style="transform: {stackPanTransform}">
+							<canvas
+								bind:this={stackSwipeCanvasLeft}
+								class="stack-story-canvas"
+								style="transform: {stackScaleTransform}"
+								width={stackStoryIndex > 0 ? getStackSwipeDims(stackImages[stackStoryIndex - 1]).width : 0}
+								height={stackStoryIndex > 0 ? getStackSwipeDims(stackImages[stackStoryIndex - 1]).height : 0}
+							></canvas>
+						</div>
 					</div>
 					<div class="stack-swipe-panel" style="width: {containerSize.width}px; height: {containerSize.height}px;">
+						<div class="stack-story-pan" style="transform: {stackPanTransform}">
+							<canvas
+								bind:this={stackSwipeCanvasCenter}
+								class="stack-story-canvas"
+								style="transform: {stackScaleTransform}"
+								width={stackStoryDims.width}
+								height={stackStoryDims.height}
+							></canvas>
+						</div>
+					</div>
+					<div class="stack-swipe-panel" style="width: {containerSize.width}px; height: {containerSize.height}px;">
+						<div class="stack-story-pan" style="transform: {stackPanTransform}">
+							<canvas
+								bind:this={stackSwipeCanvasRight}
+								class="stack-story-canvas"
+								style="transform: {stackScaleTransform}"
+								width={stackStoryIndex < stackImages.length - 1 ? getStackSwipeDims(stackImages[stackStoryIndex + 1]).width : 0}
+								height={stackStoryIndex < stackImages.length - 1 ? getStackSwipeDims(stackImages[stackStoryIndex + 1]).height : 0}
+							></canvas>
+						</div>
+					</div>
+				</div>
+				<div class="stack-story-nav" aria-label="Position">
+					<button type="button" class="stack-story-arrow" onclick={stackStoryPrev} disabled={stackStoryIndex === 0 || stackSwipeAnimating} title="Previous">←</button>
+					<span class="stack-story-counter">{stackStoryIndex + 1} / {stackImages.length}</span>
+					<button type="button" class="stack-story-arrow" onclick={stackStoryNext} disabled={stackStoryIndex === stackImages.length - 1 || stackSwipeAnimating} title="Next">→</button>
+				</div>
+			{:else}
+				<div
+					class="stack-story-frame"
+					onpointerdown={onStackSwipePointerDown}
+					onpointermove={onStackSwipePointerMove}
+					onpointerup={onStackSwipePointerUp}
+					onpointerleave={onStackSwipePointerUp}
+					ontouchstart={onStackSwipeTouchStart}
+					ontouchmove={onStackSwipeTouchMove}
+					ontouchend={onStackSwipeTouchEnd}
+					ontouchcancel={onStackSwipeTouchEnd}
+				>
+					<div class="stack-story-pan" style="transform: {stackPanTransform}">
 						<canvas
-							bind:this={stackSwipeCanvasCenter}
+							bind:this={stackStoryCanvasEl}
 							class="stack-story-canvas"
-							style="transform: scale({stackZoom})"
+							style="transform: {stackScaleTransform}"
 							width={stackStoryDims.width}
 							height={stackStoryDims.height}
 						></canvas>
 					</div>
-					<div class="stack-swipe-panel" style="width: {containerSize.width}px; height: {containerSize.height}px;">
-						<canvas
-							bind:this={stackSwipeCanvasRight}
-							class="stack-story-canvas"
-							style="transform: scale({stackZoom})"
-							width={stackStoryIndex < stackImages.length - 1 ? getStackSwipeDims(stackImages[stackStoryIndex + 1]).width : 0}
-							height={stackStoryIndex < stackImages.length - 1 ? getStackSwipeDims(stackImages[stackStoryIndex + 1]).height : 0}
-						></canvas>
-					</div>
-				</div>
-				<div class="stack-story-nav" aria-label="Position">
-					<button type="button" class="stack-story-arrow" onclick={stackStoryPrev} disabled={stackStoryIndex === 0} title="Previous">←</button>
-					<span class="stack-story-counter">{stackStoryIndex + 1} / {stackImages.length}</span>
-					<button type="button" class="stack-story-arrow" onclick={stackStoryNext} disabled={stackStoryIndex === stackImages.length - 1} title="Next">→</button>
-				</div>
-			{:else}
-				<div class="stack-story-frame">
-					<canvas
-						bind:this={stackStoryCanvasEl}
-						class="stack-story-canvas"
-						style="transform: scale({stackZoom})"
-						width={stackStoryDims.width}
-						height={stackStoryDims.height}
-					></canvas>
 				</div>
 			{/if}
 		{:else}
-			<div
-				class="stack-scroll"
-				bind:this={stackScrollEl}
-				ondragover={onStackScrollDragOver}
-			>
+			<div class="stack-scroll" class:list-reordering={dragFromIndex !== null} bind:this={stackScrollEl}>
 				<div class="stack-list-wrap">
 					<div class="stack-list" bind:this={stackListEl}>
 						{#each stackImages as item, i (item.preview)}
@@ -478,11 +827,9 @@
 								class="stack-cell-wrap"
 								class:drag-over={dragOverIndex === i && dragFromIndex !== null && dragFromIndex !== i}
 								class:show-controls={listHoverIndex === i && dragFromIndex === null}
+								class:dragging={dragFromIndex === i}
 								onpointerenter={() => onListPointerEnter(i)}
 								onpointerleave={onListPointerLeave}
-								ondragover={(e) => onListDragOver(e, i)}
-								ondragleave={(e) => onListDragLeave(e, i)}
-								ondrop={(e) => onListDrop(e, i)}
 							>
 								<div class="stack-cell">
 									<canvas
@@ -493,13 +840,14 @@
 									></canvas>
 									<div
 										class="stack-cell-handle"
-										draggable="true"
 										role="button"
 										tabindex="-1"
 										title="Drag to reorder"
 										aria-label="Drag to reorder item {i + 1}"
-										ondragstart={(e) => onListDragStart(e, i)}
-										ondragend={onListDragEnd}
+										onpointerdown={(e) => onListHandlePointerDown(e, i)}
+										onpointermove={onListHandlePointerMove}
+										onpointerup={onListHandlePointerUp}
+										onpointercancel={onListHandlePointerUp}
 									>
 										<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
 											<circle cx="9" cy="6" r="1.5" />
@@ -566,6 +914,24 @@
 			</div>
 		</div>
 		{#if stackViewMode === 'story'}
+			{#if touchUi}
+				<div class="zoom-group zoom-group-gesture">
+					<button
+						type="button"
+						class="zoom-btn"
+						class:selected={stackGestureMode === 'slide'}
+						onclick={() => setStackGestureMode('slide')}
+						title="Swipe between images"
+					>Slide</button>
+					<button
+						type="button"
+						class="zoom-btn"
+						class:selected={stackGestureMode === 'zoom'}
+						onclick={() => setStackGestureMode('zoom')}
+						title="Pinch to zoom, drag to pan"
+					>Zoom</button>
+				</div>
+			{/if}
 			<div class="zoom-group zoom-group-zoom">
 				<button type="button" class="zoom-btn" class:selected={stackZoom === 1} onclick={stackZoomReset} title="100%">100%</button>
 				<span class="zoom-pct">{Math.round(stackZoom * 100)}%</span>
@@ -630,8 +996,14 @@
 		position: relative;
 		align-items: center;
 		justify-content: center;
-		touch-action: pan-y;
+		touch-action: none;
 		overflow: hidden;
+	}
+	.stack-viewport.stack-story-view.stack-can-pan {
+		cursor: grab;
+	}
+	.stack-viewport.stack-story-view.stack-panning {
+		cursor: grabbing;
 	}
 	.stack-swipe-track {
 		display: flex;
@@ -639,9 +1011,13 @@
 		flex-shrink: 0;
 		height: 100%;
 		cursor: grab;
+		will-change: transform;
 	}
 	.stack-swipe-track:active {
 		cursor: grabbing;
+	}
+	.stack-swipe-track.swipe-animating {
+		pointer-events: none;
 	}
 	.stack-swipe-panel {
 		flex-shrink: 0;
@@ -658,6 +1034,13 @@
 		height: 100%;
 		min-height: 0;
 	}
+	.stack-story-pan {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		transform-origin: center center;
+		will-change: transform;
+	}
 	.stack-story-canvas {
 		display: block;
 		max-width: 100%;
@@ -665,7 +1048,7 @@
 		object-fit: contain;
 		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
 		transform-origin: center center;
-		transition: transform 0.12s ease;
+		will-change: transform;
 	}
 	.stack-story-nav {
 		position: absolute;
@@ -714,6 +1097,10 @@
 		overflow-y: auto;
 		overflow-x: hidden;
 		-webkit-overflow-scrolling: touch;
+	}
+	.stack-scroll.list-reordering {
+		touch-action: none;
+		user-select: none;
 	}
 	.stack-list-wrap {
 		display: block;
@@ -864,8 +1251,14 @@
 		padding-left: 10px;
 		border-left: 1px solid var(--border-subtle);
 	}
+	.zoom-group-gesture {
+		margin-left: auto;
+	}
 	.zoom-group-zoom {
 		margin-left: auto;
+	}
+	.zoom-group-gesture + .zoom-group-zoom {
+		margin-left: 0;
 	}
 	.zoom-pct {
 		min-width: 48px;

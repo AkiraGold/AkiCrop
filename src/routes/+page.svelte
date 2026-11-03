@@ -697,18 +697,6 @@
 				return;
 			}
 		}
-		if (appMode === 'stack' && stackViewMode === 'story' && stackImages.length > 1) {
-			if (e.key === 'ArrowLeft') {
-				e.preventDefault();
-				stackStoryPrev();
-				return;
-			}
-			if (e.key === 'ArrowRight') {
-				e.preventDefault();
-				stackStoryNext();
-				return;
-			}
-		}
 		if ((e.ctrlKey || e.metaKey) && e.key === 's') {
 			e.preventDefault();
 			download();

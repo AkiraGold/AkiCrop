@@ -313,6 +313,18 @@
 			resetStackPan();
 		}
 	}
+
+	function onStackKeydown(e: KeyboardEvent) {
+		if (stackViewMode !== 'story' || stackImages.length <= 1) return;
+		if (e.key === 'ArrowLeft') {
+			e.preventDefault();
+			stackStoryPrev();
+		} else if (e.key === 'ArrowRight') {
+			e.preventDefault();
+			stackStoryNext();
+		}
+	}
+
 	let stackWheelFocal: { vx: number; vy: number; cx: number; cy: number } | null = null;
 
 	const smoothStackZoom = createSmoothZoom({
@@ -803,6 +815,8 @@
 		if (listHoverIndex !== null) listHoverIndex = null;
 	}
 </script>
+
+<svelte:window onkeydown={onStackKeydown} />
 
 <div
 	bind:this={viewportEl}

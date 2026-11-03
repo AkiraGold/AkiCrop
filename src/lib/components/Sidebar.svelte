@@ -549,10 +549,12 @@
 		margin-top: 4px;
 	}
 	.remove-image-btn {
-		color: var(--text-secondary);
+		color: var(--text-primary);
 	}
 	.remove-image-btn:hover {
-		color: var(--error, #c66);
+		color: var(--error, #e88);
+		border-color: rgba(200, 80, 80, 0.45);
+		background: rgba(180, 50, 50, 0.12);
 	}
 	.slider-label {
 		display: flex;

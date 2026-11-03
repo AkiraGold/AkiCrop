@@ -21,10 +21,12 @@
 	const SWIPE_ANIM_MS = 280;
 	const WHEEL_NAV_THRESHOLD = 100;
 	const WHEEL_NAV_COOLDOWN_MS = 380;
-	const LIST_GRID_MIN_COL = 440;
+	const LIST_SINGLE_COL_MQ = '(max-width: 767px)';
+	const LIST_COLUMNS_MIN = 1;
+	const LIST_COLUMNS_MAX = 4;
 	const LIST_GRID_GAP = 12;
 	const LIST_GRID_PAD = 32;
-	const LIST_SINGLE_COL_MQ = '(max-width: 767px)';
+	const LIST_NEXT_ROW_PEEK = 1 / 3;
 
 	interface Props {
 		viewportEl?: HTMLDivElement | null;
@@ -97,17 +99,42 @@
 			? window.matchMedia('(hover: none), (pointer: coarse)').matches
 			: false
 	);
+	let listColumns = $state(2);
+	let listColumnsManual = false;
+	let listColumnsAutoRatio = NaN;
 
 	const stackStoryCurrentItem = $derived(
 		stackImages.length > 0 ? stackImages[stackStoryIndex] ?? stackImages[0] : null
 	);
 
-	const browseViewLabel = $derived.by(() => {
-		if (browseForcedSingleCol) return 'List';
-		const inner = Math.max(0, containerSize.width - LIST_GRID_PAD);
-		const cols = Math.max(1, Math.floor((inner + LIST_GRID_GAP) / (LIST_GRID_MIN_COL + LIST_GRID_GAP)));
-		return cols > 1 ? 'Grid' : 'List';
-	});
+	const effectiveListColumns = $derived(browseForcedSingleCol ? 1 : listColumns);
+	const browseViewLabel = $derived(effectiveListColumns > 1 ? 'Grid' : 'List');
+
+	function listFrameRatio(): number {
+		if (templateRatio > 0) return templateRatio;
+		const first = stackImages[0]?.preview;
+		if (first && first.height > 0) return first.width / first.height;
+		return 1;
+	}
+
+	function computeDefaultListColumns(viewportW: number, viewportH: number, ratio: number): number {
+		const innerW = Math.max(1, viewportW - LIST_GRID_PAD);
+		const innerH = Math.max(1, viewportH - LIST_GRID_PAD);
+		const r = ratio > 0 ? ratio : 1;
+		const maxColW = (innerH * r) / (1 + LIST_NEXT_ROW_PEEK);
+		if (maxColW <= 0) return 2;
+		const needed = Math.ceil((innerW + LIST_GRID_GAP) / (maxColW + LIST_GRID_GAP));
+		return Math.max(LIST_COLUMNS_MIN, Math.min(LIST_COLUMNS_MAX, needed));
+	}
+
+	function listColumnsIn() {
+		listColumnsManual = true;
+		listColumns = Math.min(LIST_COLUMNS_MAX, listColumns + 1);
+	}
+	function listColumnsOut() {
+		listColumnsManual = true;
+		listColumns = Math.max(LIST_COLUMNS_MIN, listColumns - 1);
+	}
 
 	$effect(() => {
 		if (typeof window === 'undefined') return;
@@ -127,6 +154,18 @@
 			mq.removeEventListener('change', sync);
 			touchMq.removeEventListener('change', syncTouch);
 		};
+	});
+
+	$effect(() => {
+		if (browseForcedSingleCol) return;
+		const r = listFrameRatio();
+		const w = containerSize.width;
+		const h = containerSize.height;
+		if (w <= 0 || h <= 0) return;
+		if (listColumnsManual && Math.abs(r - listColumnsAutoRatio) < 1e-9) return;
+		listColumnsManual = false;
+		listColumnsAutoRatio = r;
+		listColumns = computeDefaultListColumns(w, h, r);
 	});
 
 	function getTouchDist(touches: TouchList): number {
@@ -791,9 +830,21 @@
 					</div>
 				</div>
 				<div class="stack-story-nav" aria-label="Position">
-					<button type="button" class="stack-story-arrow" onclick={stackStoryPrev} disabled={stackStoryIndex === 0 || stackSwipeAnimating} title="Previous">←</button>
-					<span class="stack-story-counter">{stackStoryIndex + 1} / {stackImages.length}</span>
-					<button type="button" class="stack-story-arrow" onclick={stackStoryNext} disabled={stackStoryIndex === stackImages.length - 1 || stackSwipeAnimating} title="Next">→</button>
+					<button type="button" class="stack-story-arrow" onclick={stackStoryPrev} disabled={stackStoryIndex === 0 || stackSwipeAnimating} title="Previous" aria-label="Previous image">
+						<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<path d="M15 18 9 12l6-6" />
+						</svg>
+					</button>
+					<span class="stack-story-counter">
+						<span class="stack-story-counter-current">{stackStoryIndex + 1}</span>
+						<span class="stack-story-counter-sep">/</span>
+						<span class="stack-story-counter-total">{stackImages.length}</span>
+					</span>
+					<button type="button" class="stack-story-arrow" onclick={stackStoryNext} disabled={stackStoryIndex === stackImages.length - 1 || stackSwipeAnimating} title="Next" aria-label="Next image">
+						<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<path d="m9 18 6-6-6-6" />
+						</svg>
+					</button>
 				</div>
 			{:else}
 				<div
@@ -821,7 +872,11 @@
 		{:else}
 			<div class="stack-scroll" class:list-reordering={dragFromIndex !== null} bind:this={stackScrollEl}>
 				<div class="stack-list-wrap">
-					<div class="stack-list" bind:this={stackListEl}>
+					<div
+						class="stack-list"
+						bind:this={stackListEl}
+						style="grid-template-columns: repeat({effectiveListColumns}, minmax(0, 1fr))"
+					>
 						{#each stackImages as item, i (item.preview)}
 							<div
 								class="stack-cell-wrap"
@@ -913,7 +968,13 @@
 				<button type="button" class="zoom-btn" onclick={clearStack}>Clear</button>
 			</div>
 		</div>
-		{#if stackViewMode === 'story'}
+		{#if stackViewMode === 'list' && !browseForcedSingleCol}
+			<div class="zoom-group zoom-group-zoom">
+				<span class="zoom-pct" title="Columns">{listColumns} col</span>
+				<button type="button" class="zoom-btn" onclick={listColumnsOut} disabled={listColumns <= LIST_COLUMNS_MIN} title="Fewer columns">−</button>
+				<button type="button" class="zoom-btn" onclick={listColumnsIn} disabled={listColumns >= LIST_COLUMNS_MAX} title="More columns">+</button>
+			</div>
+		{:else if stackViewMode === 'story'}
 			{#if touchUi}
 				<div class="zoom-group zoom-group-gesture">
 					<button
@@ -1052,42 +1113,68 @@
 	}
 	.stack-story-nav {
 		position: absolute;
-		bottom: 12px;
+		bottom: 16px;
 		left: 50%;
 		transform: translateX(-50%);
+		z-index: 5;
 		display: flex;
 		align-items: center;
-		gap: 12px;
-		padding: 8px 16px;
+		gap: 2px;
+		padding: 3px;
 		border-radius: var(--radius);
-		background: rgba(0, 0, 0, 0.6);
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		background: rgba(18, 18, 18, 0.72);
+		backdrop-filter: blur(12px);
+		-webkit-backdrop-filter: blur(12px);
+		box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 	}
 	.stack-story-arrow {
-		width: 36px;
-		height: 36px;
+		width: 34px;
+		height: 34px;
 		border: none;
-		border-radius: var(--radius);
-		background: rgba(255, 255, 255, 0.15);
+		border-radius: 4px;
+		background: transparent;
 		color: var(--text-primary);
-		font-size: 18px;
 		cursor: pointer;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		padding: 0;
+		transition: background 0.15s, color 0.15s, opacity 0.15s;
 	}
 	.stack-story-arrow:hover:not(:disabled) {
-		background: rgba(255, 255, 255, 0.25);
+		background: rgba(59, 99, 251, 0.35);
+		color: #fff;
 	}
 	.stack-story-arrow:disabled {
-		opacity: 0.4;
+		opacity: 0.35;
 		cursor: not-allowed;
 	}
 	.stack-story-counter {
-		font-size: var(--font-size-label);
+		display: inline-flex;
+		align-items: baseline;
+		justify-content: center;
+		gap: 5px;
+		min-width: 3.6em;
+		padding: 0 8px;
+		font-variant-numeric: tabular-nums;
+		line-height: 1;
+		user-select: none;
+	}
+	.stack-story-counter-current {
+		font-size: 14px;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.stack-story-counter-sep {
+		font-size: 12px;
 		color: var(--text-secondary);
-		min-width: 3em;
-		text-align: center;
+		opacity: 0.7;
+	}
+	.stack-story-counter-total {
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--text-secondary);
 	}
 	.stack-scroll {
 		flex: 1;
@@ -1110,7 +1197,6 @@
 	}
 	.stack-list {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
 		gap: 12px;
 		width: 100%;
 		box-sizing: border-box;
@@ -1266,6 +1352,10 @@
 		font-size: var(--font-size-label);
 		color: var(--text-secondary);
 	}
+	.zoom-btn:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
 	.zoom-bar label.zoom-btn {
 		display: inline-flex;
 		align-items: center;
@@ -1310,7 +1400,6 @@
 			padding: 10px;
 		}
 		.stack-list {
-			grid-template-columns: 1fr;
 			gap: 8px;
 		}
 		.stack-cell-wrap {

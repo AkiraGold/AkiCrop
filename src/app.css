@@ -78,6 +78,59 @@ html, body {
 	border: 1px solid var(--border-subtle);
 }
 
+.zoom-bar {
+	width: 100%;
+	height: var(--zoombar-height);
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 8px;
+	padding: 0 8px;
+	box-sizing: border-box;
+	background: var(--bg-panel);
+	border-top: 1px solid var(--border-subtle);
+}
+.zoom-group {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+.zoom-group-right {
+	margin-left: auto;
+}
+.zoom-btn {
+	min-width: var(--touch-min);
+	min-height: 32px;
+	padding: 0 12px;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius);
+	background: var(--bg-input);
+	color: var(--text-primary);
+	font: inherit;
+	font-size: 14px;
+	cursor: pointer;
+	transition: background 0.15s;
+}
+.zoom-btn:hover {
+	background: rgba(255, 255, 255, 0.08);
+}
+.zoom-btn.selected {
+	border-color: var(--adobe-blue);
+	background: rgba(59, 99, 251, 0.2);
+	color: #a5b8ff;
+}
+.zoom-btn:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+.zoom-pct {
+	min-width: 48px;
+	text-align: center;
+	font-size: var(--font-size-label);
+	color: var(--text-secondary);
+}
+
 @media (max-width: 767px) {
 	:root {
 		--zoombar-height: 34px;

@@ -976,7 +976,7 @@
 			currentTemplateId={currentTemplateId}
 			onSetTemplate={setTemplate}
 			onOpenAspectPopup={openAspectPopup}
-			showCropRemoveImage={!!previewImage}
+			showCropRemoveImage={appMode === 'crop' && !!previewImage}
 			showCarouselRemoveImage={!!carouselImage}
 			onClearCropImage={clearCropImage}
 			onClearCarouselImage={clearCarouselImage}

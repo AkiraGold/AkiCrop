@@ -8,7 +8,13 @@
 		panAfterZoomToward,
 		wheelZoomFactor
 	} from '#lib/utils.js';
-	import { STACK_PREVIEW_MAX, STACK_ZOOM_MIN, STACK_ZOOM_MAX, STACK_ZOOM_STEP } from '#lib/constants.js';
+	import {
+		MOBILE_MQ,
+		STACK_PREVIEW_MAX,
+		STACK_ZOOM_MIN,
+		STACK_ZOOM_MAX,
+		STACK_ZOOM_STEP
+	} from '#lib/constants.js';
 	import type { BorderType } from '#lib/types.js';
 
 	interface StackImage {
@@ -21,7 +27,6 @@
 	const SWIPE_ANIM_MS = 280;
 	const WHEEL_NAV_THRESHOLD = 100;
 	const WHEEL_NAV_COOLDOWN_MS = 380;
-	const LIST_NARROW_MQ = '(max-width: 767px)';
 	const LIST_COLUMNS_MIN = 1;
 	const LIST_COLUMNS_MAX = 4;
 	const LIST_COLUMNS_PHONE_MAX = 2;
@@ -95,7 +100,7 @@
 	let wheelNavAccum = 0;
 	let wheelNavCooldownUntil = 0;
 	let narrowListUi = $state(
-		typeof window !== 'undefined' ? window.matchMedia(LIST_NARROW_MQ).matches : false
+		typeof window !== 'undefined' ? window.matchMedia(MOBILE_MQ).matches : false
 	);
 	let touchUi = $state(
 		typeof window !== 'undefined'
@@ -158,13 +163,15 @@
 			return;
 		}
 		stackViewMode = 'list';
-		listColumnsManual = true;
-		listColumns = mode === 'grid' ? LIST_COLUMNS_PHONE_MAX : 1;
+		if (narrowListUi) {
+			listColumnsManual = true;
+			listColumns = mode === 'grid' ? LIST_COLUMNS_PHONE_MAX : 1;
+		}
 	}
 
 	$effect(() => {
 		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia(LIST_NARROW_MQ);
+		const mq = window.matchMedia(MOBILE_MQ);
 		const touchMq = window.matchMedia('(hover: none), (pointer: coarse)');
 		const sync = () => {
 			narrowListUi = mq.matches;
@@ -760,13 +767,27 @@
 		if (!stackListEl) return null;
 		const wraps = stackListEl.querySelectorAll('.stack-cell-wrap');
 		if (!wraps.length) return null;
+
+		const under = document.elementFromPoint(clientX, clientY);
+		const hit = under instanceof Element ? under.closest('.stack-cell-wrap') : null;
+		if (hit instanceof HTMLElement && stackListEl.contains(hit)) {
+			const idx = Array.prototype.indexOf.call(stackListEl.children, hit);
+			if (idx >= 0) return idx;
+		}
+
+		let best = 0;
+		let bestDist = Infinity;
 		for (let i = 0; i < wraps.length; i++) {
 			const r = wraps[i].getBoundingClientRect();
-			if (clientY >= r.top && clientY <= r.bottom) return i;
+			const cx = (r.left + r.right) / 2;
+			const cy = (r.top + r.bottom) / 2;
+			const d = (clientX - cx) ** 2 + (clientY - cy) ** 2;
+			if (d < bestDist) {
+				bestDist = d;
+				best = i;
+			}
 		}
-		const first = wraps[0].getBoundingClientRect();
-		if (clientY < first.top) return 0;
-		return wraps.length - 1;
+		return best;
 	}
 
 	function onListHandlePointerDown(e: PointerEvent, index: number) {
@@ -1032,14 +1053,14 @@
 					type="button"
 					class="zoom-btn"
 					class:selected={stackViewMode === 'list'}
-					onclick={() => (stackViewMode = 'list')}
+					onclick={() => setStackBrowseMode('list')}
 					title="List view"
 				>List</button>
 				<button
 					type="button"
 					class="zoom-btn"
 					class:selected={stackViewMode === 'story'}
-					onclick={() => (stackViewMode = 'story')}
+					onclick={() => setStackBrowseMode('story')}
 					title="One at a time (drag to switch)"
 				>Swipe</button>
 			{/if}
@@ -1393,23 +1414,7 @@
 		text-align: center;
 		pointer-events: none;
 	}
-	.zoom-bar {
-		width: 100%;
-		height: var(--zoombar-height);
-		flex-shrink: 0;
-		display: flex;
-		align-items: center;
-		justify-content: flex-start;
-		gap: 8px;
-		padding: 0 8px;
-		box-sizing: border-box;
-		background: var(--bg-panel);
-		border-top: 1px solid var(--border-subtle);
-	}
 	.zoom-group {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
 		flex-shrink: 0;
 	}
 	.zoom-subgroup {
@@ -1429,16 +1434,6 @@
 	.zoom-group-gesture + .zoom-group-zoom {
 		margin-left: 0;
 	}
-	.zoom-pct {
-		min-width: 48px;
-		text-align: center;
-		font-size: var(--font-size-label);
-		color: var(--text-secondary);
-	}
-	.zoom-btn:disabled {
-		opacity: 0.4;
-		cursor: not-allowed;
-	}
 	.zoom-bar label.zoom-btn {
 		display: inline-flex;
 		align-items: center;
@@ -1451,27 +1446,6 @@
 		pointer-events: none;
 		width: 0;
 		height: 0;
-	}
-	.zoom-btn {
-		min-width: var(--touch-min);
-		min-height: 32px;
-		padding: 0 12px;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius);
-		background: var(--bg-input);
-		color: var(--text-primary);
-		font: inherit;
-		font-size: 14px;
-		cursor: pointer;
-		transition: background 0.15s;
-	}
-	.zoom-btn:hover {
-		background: rgba(255, 255, 255, 0.08);
-	}
-	.zoom-btn.selected {
-		border-color: var(--adobe-blue);
-		background: rgba(59, 99, 251, 0.2);
-		color: #a5b8ff;
 	}
 	@media (max-width: 767px) {
 		.zoom-bar {

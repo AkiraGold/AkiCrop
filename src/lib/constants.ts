@@ -3,6 +3,10 @@ import { INSTAGRAM_PRESETS, WIDE_PRESETS, TALL_PRESETS } from './types';
 
 export type AppMode = 'crop' | 'carousel' | 'stack';
 
+/** Keep in sync with `@media (max-width: 767px)` in CSS. */
+export const MOBILE_MAX_PX = 767;
+export const MOBILE_MQ = `(max-width: ${MOBILE_MAX_PX}px)`;
+
 export const MAX_PREVIEW = 2048;
 export const CAROUSEL_DEFAULT_RATIO = 4 / 5;
 export const STACK_PREVIEW_MAX = 400;

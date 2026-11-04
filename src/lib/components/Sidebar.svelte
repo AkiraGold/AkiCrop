@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
 	import type { TemplateId, BorderType } from '#lib/types.js';
-	import type { AppMode } from '#lib/constants.js';
+	import { MOBILE_MQ, type AppMode } from '#lib/constants.js';
 
 	interface Props {
 		appMode: AppMode;
@@ -67,6 +67,7 @@
 	}: Props = $props();
 
 	let panelsDropdownOpen = $state(false);
+	let removeConfirming = $state(false);
 	let narrowUi = $state(false);
 	let panelCollapsed = $state(false);
 	let panelHeightPx = $state(260);
@@ -237,7 +238,12 @@
 
 	async function fitPanelToContent(retries = 8, force = false) {
 		const allow = untrack(
-			() => narrowUi && !panelCollapsed && hasImage && (force || !panelManualHeight)
+			() =>
+				narrowUi &&
+				!panelCollapsed &&
+				!panelResizing &&
+				hasImage &&
+				(force || !panelManualHeight)
 		);
 		if (!allow) return;
 		panelMeasuring = true;
@@ -248,7 +254,7 @@
 			for (let i = 0; i < frames; i++) {
 				await tick();
 				await nextFrame();
-				if (untrack(() => panelCollapsed || !narrowUi || !hasImage)) return;
+				if (untrack(() => panelCollapsed || panelResizing || !narrowUi || !hasImage)) return;
 				best = Math.max(best, contentPanelHeight());
 				if (i > 1 && best >= PANEL_H_MIN && best === prev) break;
 				prev = best;
@@ -340,7 +346,7 @@
 	}
 
 	onMount(() => {
-		const mq = window.matchMedia('(max-width: 767px)');
+		const mq = window.matchMedia(MOBILE_MQ);
 		const sync = () => {
 			narrowUi = mq.matches;
 		};
@@ -374,8 +380,25 @@
 
 		const modeChanged = lastPanelMode !== null && lastPanelMode !== mode;
 		if (modeChanged) {
-			persistCurrentPanelState(lastPanelMode);
-			untrack(() => applyPanelState(mode));
+			const prevMode = lastPanelMode;
+			removeConfirming = false;
+			untrack(() => {
+				if (sidebarBodyEl && !panelCollapsed) {
+					scrollTopByMode[prevMode] = sidebarBodyEl.scrollTop;
+				}
+				persistCurrentPanelState(prevMode);
+				applyPanelState(mode);
+			});
+			void (async () => {
+				await tick();
+				await nextFrame();
+				untrack(() => {
+					if (sidebarBodyEl && !panelCollapsed) {
+						sidebarBodyEl.scrollTop = scrollTopByMode[mode] ?? 0;
+						updateScrollHints();
+					}
+				});
+			})();
 		}
 		lastPanelMode = mode;
 
@@ -497,11 +520,6 @@
 				<button type="button" class="sidebar-btn aspect-more-btn" onclick={onOpenAspectPopup}>
 					More ratios…
 				</button>
-				{#if showCropRemoveImage}
-					<button type="button" class="sidebar-btn aspect-more-btn remove-image-btn" onclick={onClearCropImage}>
-						Remove image
-					</button>
-				{/if}
 				{#if appMode === 'crop' || appMode === 'stack'}
 					<div class="sidebar-fill-row">
 						<span class="control-label">Image in frame</span>
@@ -615,11 +633,6 @@
 					{/if}
 				</div>
 				<p class="control-muted">{carouselPanelCount} panel{carouselPanelCount !== 1 ? 's' : ''}</p>
-				{#if showCarouselRemoveImage}
-					<button type="button" class="sidebar-btn aspect-more-btn remove-image-btn" onclick={onClearCarouselImage}>
-						Remove image
-					</button>
-				{/if}
 			</section>
 		{/if}
 
@@ -733,6 +746,38 @@
 					<input type="color" class="color-picker" bind:value={solidColor} />
 					<input type="text" class="color-hex" bind:value={solidColor} placeholder="#ffffff" />
 				</div>
+			</section>
+		{/if}
+
+		{#if showCropRemoveImage || showCarouselRemoveImage}
+			<section class="control-group remove-image-group">
+				{#if removeConfirming}
+					<p class="control-muted">Remove this image?</p>
+					<div class="remove-confirm-row">
+						<button type="button" class="sidebar-btn" onclick={() => (removeConfirming = false)}>
+							Cancel
+						</button>
+						<button
+							type="button"
+							class="sidebar-btn remove-image-btn"
+							onclick={() => {
+								removeConfirming = false;
+								if (showCropRemoveImage) onClearCropImage();
+								else onClearCarouselImage();
+							}}
+						>
+							Remove
+						</button>
+					</div>
+				{:else}
+					<button
+						type="button"
+						class="sidebar-btn remove-image-btn"
+						onclick={() => (removeConfirming = true)}
+					>
+						Remove image
+					</button>
+				{/if}
 			</section>
 		{/if}
 	</div>
@@ -967,13 +1012,25 @@
 		width: 100%;
 		margin-top: 4px;
 	}
+	.remove-image-group {
+		margin-top: auto;
+		padding-top: 8px;
+	}
 	.remove-image-btn {
+		width: 100%;
 		color: var(--text-primary);
 	}
 	.remove-image-btn:hover {
 		color: var(--error, #e88);
 		border-color: rgba(200, 80, 80, 0.45);
 		background: rgba(180, 50, 50, 0.12);
+	}
+	.remove-confirm-row {
+		display: flex;
+		gap: 8px;
+	}
+	.remove-confirm-row .sidebar-btn {
+		flex: 1;
 	}
 	.slider-label {
 		display: flex;

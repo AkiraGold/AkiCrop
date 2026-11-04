@@ -854,6 +854,8 @@
 					class="stack-swipe-track"
 					class:swipe-animating={stackSwipeAnimating}
 					style="transform: translateX({stackSwipeDragOffset}px); width: {containerSize.width * 3}px;"
+					role="application"
+					aria-label="Swipe between stack images"
 					onpointerdown={onStackSwipePointerDown}
 					onpointermove={onStackSwipePointerMove}
 					onpointerup={onStackSwipePointerUp}
@@ -917,6 +919,8 @@
 			{:else}
 				<div
 					class="stack-story-frame"
+					role="application"
+					aria-label="Stack image"
 					onpointerdown={onStackSwipePointerDown}
 					onpointermove={onStackSwipePointerMove}
 					onpointerup={onStackSwipePointerUp}
@@ -944,13 +948,16 @@
 						class="stack-list"
 						bind:this={stackListEl}
 						style="grid-template-columns: repeat({effectiveListColumns}, minmax(0, 1fr))"
+						role="list"
 					>
 						{#each stackImages as item, i (item.preview)}
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
 							<div
 								class="stack-cell-wrap"
 								class:drag-over={dragOverIndex === i && dragFromIndex !== null && dragFromIndex !== i}
 								class:show-controls={listHoverIndex === i && dragFromIndex === null}
 								class:dragging={dragFromIndex === i}
+								role="listitem"
 								onpointerenter={() => onListPointerEnter(i)}
 								onpointerleave={onListPointerLeave}
 							>

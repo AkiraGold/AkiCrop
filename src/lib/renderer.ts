@@ -1,6 +1,12 @@
 import type { RenderOptions } from './types';
 import { calculateAverageEdgeColor } from './utils';
 
+type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+function get2dContext(canvas: HTMLCanvasElement | OffscreenCanvas): Ctx2D | null {
+	return canvas.getContext('2d') as Ctx2D | null;
+}
+
 /** Canvas size for template ratio; ratio 0 = image aspect. Caps longest side when maxSize set. */
 export function getCanvasDimensions(
 	imageWidth: number,
@@ -29,7 +35,7 @@ export function getCanvasDimensions(
 }
 
 export function drawSolidBackground(
-	ctx: CanvasRenderingContext2D,
+	ctx: Ctx2D,
 	width: number,
 	height: number,
 	hexColor: string
@@ -40,7 +46,7 @@ export function drawSolidBackground(
 
 /** Separable box blur via getImageData — works where ctx.filter does not (Safari/PWA). */
 function boxBlurCanvas(
-	sourceCtx: CanvasRenderingContext2D,
+	sourceCtx: Ctx2D,
 	width: number,
 	height: number,
 	radius: number
@@ -99,7 +105,7 @@ const BLUR_BUFFER_MAX = 256;
 
 /** Cover-draw then blur; downscale → blur → upscale for speed. */
 export function drawBlurBackground(
-	ctx: CanvasRenderingContext2D,
+	ctx: Ctx2D,
 	image: ImageBitmap | HTMLImageElement,
 	width: number,
 	height: number,
@@ -134,7 +140,8 @@ export function drawBlurBackground(
 		const cover = typeof document !== 'undefined' ? document.createElement('canvas') : new OffscreenCanvas(width, height);
 		cover.width = width;
 		cover.height = height;
-		const coverCtx = cover.getContext('2d')!;
+		const coverCtx = get2dContext(cover);
+		if (!coverCtx) return;
 		coverCtx.drawImage(image, sx, sy, sw, sh, 0, 0, width, height);
 		ctx.drawImage(cover, 0, 0);
 		return;
@@ -149,14 +156,15 @@ export function drawBlurBackground(
 	const small = typeof document !== 'undefined' ? document.createElement('canvas') : new OffscreenCanvas(bw, bh);
 	small.width = bw;
 	small.height = bh;
-	const smallCtx = small.getContext('2d')!;
+	const smallCtx = get2dContext(small);
+	if (!smallCtx) return;
 	smallCtx.drawImage(image, sx, sy, sw, sh, 0, 0, bw, bh);
 	boxBlurCanvas(smallCtx, bw, bh, blurRadius);
 	ctx.drawImage(small, 0, 0, bw, bh, 0, 0, width, height);
 }
 
 export function drawForegroundImage(
-	ctx: CanvasRenderingContext2D,
+	ctx: Ctx2D,
 	image: ImageBitmap | HTMLImageElement,
 	padding: number,
 	width: number,
@@ -196,7 +204,7 @@ export function renderCanvas(
 	canvas: HTMLCanvasElement | OffscreenCanvas,
 	options: RenderOptions
 ): void {
-	const ctx = canvas.getContext('2d');
+	const ctx = get2dContext(canvas);
 	if (!ctx) return;
 
 	const { width, height, image, padding, borderType, blurStrength, solidColor, sourceRect, fillMode = 'contain', zoom = 1 } = options;

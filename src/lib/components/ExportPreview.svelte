@@ -68,9 +68,11 @@
 	<div
 		class="export-preview-overlay"
 		role="dialog"
+		tabindex="-1"
 		aria-modal="true"
 		aria-label="Export preview"
 		onclick={(e) => e.target === e.currentTarget && onClose()}
+		onkeydown={(e) => e.key === 'Escape' && onClose()}
 	>
 		<div class="export-preview-box">
 			<div class="export-preview-header">
@@ -533,7 +535,6 @@
 		display: block;
 		width: 100%;
 		height: auto;
-		vertical-align: bottom;
 		background: transparent;
 	}
 	.export-preview-index {

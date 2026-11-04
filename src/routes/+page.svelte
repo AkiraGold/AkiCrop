@@ -669,20 +669,13 @@
 
 	function triggerDownloadFallback(blob: Blob, filename: string) {
 		const url = URL.createObjectURL(blob);
-		const a = document.getElementById('download-link') as HTMLAnchorElement;
-		if (a) {
-			a.href = url;
-			a.download = filename;
-			a.click();
-		} else {
-			const link = document.createElement('a');
-			link.href = url;
-			link.download = filename;
-			link.rel = 'noopener';
-			document.body.appendChild(link);
-			link.click();
-			document.body.removeChild(link);
-		}
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = filename;
+		link.rel = 'noopener';
+		document.body.appendChild(link);
+		link.click();
+		document.body.removeChild(link);
 		setTimeout(() => URL.revokeObjectURL(url), 500);
 	}
 
@@ -883,7 +876,6 @@
 	onpointerup={() => setSliderActive(null)}
 ></svelte:window>
 
-<a id="download-link" class="download-link" href="#" download> </a>
 <div class="app">
 	<Topbar
 		appMode={appMode}
@@ -1053,15 +1045,6 @@
 </div>
 
 <style>
-	.download-link {
-		position: absolute;
-		width: 0;
-		height: 0;
-		opacity: 0;
-		pointer-events: none;
-		overflow: hidden;
-	}
-
 	.app {
 		height: 100vh;
 		height: 100dvh;

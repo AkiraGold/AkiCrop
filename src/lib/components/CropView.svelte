@@ -491,6 +491,8 @@
 	class:canvas-interactive={!!previewImage}
 	class:can-pan={!!previewImage && canPan}
 	class:grabbing={!!previewImage && isPanning}
+	role="application"
+	aria-label="Crop canvas"
 	ontouchstart={previewImage ? onTouchStart : undefined}
 	ontouchmove={previewImage ? onTouchMove : undefined}
 	ontouchend={previewImage ? onTouchEnd : undefined}

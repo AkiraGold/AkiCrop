@@ -380,7 +380,7 @@
 
 		const modeChanged = lastPanelMode !== null && lastPanelMode !== mode;
 		if (modeChanged) {
-			const prevMode = lastPanelMode;
+			const prevMode: AppMode = lastPanelMode!;
 			removeConfirming = false;
 			untrack(() => {
 				if (sidebarBodyEl && !panelCollapsed) {
@@ -839,9 +839,7 @@
 		filter: saturate(0.25) brightness(0.9);
 	}
 	.sidebar-body.sidebar-disabled button,
-	.sidebar-body.sidebar-disabled input,
-	.sidebar-body.sidebar-disabled select,
-	.sidebar-body.sidebar-disabled textarea {
+	.sidebar-body.sidebar-disabled input {
 		pointer-events: none;
 	}
 	.sidebar-body.sidebar-disabled .sidebar-btn.selected {

@@ -199,6 +199,5 @@
 	}
 	.carousel-panel-canvas {
 		display: block;
-		vertical-align: bottom;
 	}
 </style>

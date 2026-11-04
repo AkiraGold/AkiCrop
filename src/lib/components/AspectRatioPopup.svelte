@@ -45,11 +45,13 @@
 	<div
 		class="export-preview-overlay aspect-popup-overlay"
 		role="dialog"
+		tabindex="-1"
 		aria-modal="true"
 		aria-label="Choose aspect ratio"
 		onclick={(e) => e.target === e.currentTarget && onClose()}
+		onkeydown={(e) => e.key === 'Escape' && onClose()}
 	>
-		<div class="aspect-popup-box" onclick={(e) => e.stopPropagation()}>
+		<div class="aspect-popup-box">
 			<div class="export-preview-header">
 				<h2 class="export-preview-title">Choose aspect ratio</h2>
 				<button type="button" class="export-preview-close" aria-label="Close" onclick={onClose}>×</button>
@@ -299,7 +301,6 @@
 		width: auto;
 		height: auto;
 		flex-shrink: 0;
-		vertical-align: bottom;
 	}
 	.control-label {
 		font-size: var(--font-size-label);

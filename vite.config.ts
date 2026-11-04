@@ -16,5 +16,5 @@ export default defineConfig({
 			})
 		})
 	],
-	server: { https: process.env.VITE_HTTPS === 'true' }
+	server: process.env.VITE_HTTPS === 'true' ? { https: {} } : undefined
 });
